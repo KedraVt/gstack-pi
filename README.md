@@ -3,6 +3,7 @@
 gstack browser tools and workflow skills for the [pi coding agent harness](https://github.com/earendil-works/pi-coding-agent).
 
 Exposes gstack's headless/headed browser as 60 native pi tools (e.g. `gstack_goto`, `gstack_snapshot`, `gstack_click`, `gstack_screenshot`) and a curated suite of 23 advanced workflow skills (e.g. `/skill:office-hours`, `/skill:review`, `/skill:qa`, `/skill:scrape`).
+Not all gstack tools and workflows are implemented, i picked a curated selection of tools and skills, in order to keep the workflow lightweight (following Pi's principles), minimize token-usage, and optimize the workflows.  
 
 Instead of utilizing network overhead or the MCP protocol (which is often too token-heavy for complex browser interactions), `gstack-pi` adopts a "native" approach. It limits textual results (like the DOM structure or accessibility tree) to a maximum of 32,000 characters. If a page exceeds this limit, the extension intelligently truncates the output and provides contextual hints to the LLM to explore selectors incrementally, saving crucial space in the context window.
 
