@@ -1,0 +1,33 @@
+{
+  "name": "@kedra/gstack-pi",
+  "version": "1.0.0",
+  "description": "gstack browser + workflow skills for pi",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "files": [
+    "index.ts",
+    "tools.generated.ts",
+    "lib/",
+    "skills/"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "gen:tools": "bun run scripts/gen-tools.ts",
+    "sync:skills": "bun run scripts/sync-skills.ts",
+    "test": "node --test test/smoke.ts"
+  }
+}
