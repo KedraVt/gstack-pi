@@ -20,7 +20,7 @@ Additionally, the 23 vendored skills aren't just static text: they are fully exe
 
 To use the 60 tools and 23 advanced skills, you need:
 
-1. **A clone of gstack** on your disk.
+1. **A clone of gstack** (https://github.com/garrytan/gstack) on your disk.
 
 2. **Set the `GSTACK_ROOT` environment variable** pointing to the cloned folder.
    This single variable is used by both the 60 Pi tools (to locate the compiled `browse/dist/browse` binary) and the 23 workflow skills (to find helper scripts, config, and the design engine).
@@ -177,3 +177,82 @@ If you change the commands or flags in the gstack repository:
 | `export: not recognized` (Windows) | Using bash syntax in PowerShell | Use `[Environment]::SetEnvironmentVariable(...)` instead (see [Requirements](#1-requirements)) |
 | Extension loads but tools return exit 127 | `GSTACK_ROOT` was set *after* Pi started | Restart Pi so it picks up the new environment variable |
 | `bun: command not found` | Bun not installed or not on PATH | Install Bun (see [Requirements](#1-requirements)), then restart your terminal |
+
+---
+
+## Updates & Compatibility
+
+ gstack Version Independence:
+ This extension is designed to be highly decoupled from the core gstack repository.
+ When you update your local gstack clone (via git pull and bun run build), the
+ extension automatically uses the latest engine improvements, performance boosts, and
+ bug fixes without requiring any update to the npm package itself.
+
+ When do I need to update this extension?
+ You only need to wait for an extension update (via pi update npm:@kedra/gstack-pi) if
+ the upstream gstack repository introduces entirely new CLI commands or new workflow
+ skills (obviously the creator should have updated the package in order to work, if not just tell me and i will ...maybe).
+
+ For Developers / Contributors:
+ If you want to pull the latest commands and skills from upstream before an official
+ npm release, simply update your local gstack clone, then run the sync scripts inside
+ the extension's folder:
+
+### 1. Updating the Engine (gstack clone)
+
+ If you just want performance improvements, bug fixes, or stability updates from the
+ upstream project, you only need to update your local gstack repository. The extension
+ will automatically use the updated engine.
+
+ Run this in your terminal:
+
+ ```bash
+   cd "$GSTACK_ROOT"
+   git pull origin main
+   bun install
+   bun run build
+ ```
+
+ ### 2. Updating the Extension (gstack-pi)
+
+ If the upstream repository has introduced new commands or new workflow skills, the
+ engine alone isn't enough. You need to update this extension to expose those new
+ features to Pi.
+
+ Run this in the extension folder:
+
+ ```bash
+   cd /path/to/pi-extensions/gstack-pi
+
+   # Auto-generate new tools and sync new skills from the updated engine
+   bun run gen:tools
+   bun run sync:skills
+ ```
+
+ This automatically parses the new gstack source code, rebuilds the tools, and updates
+ the skills logic.
+
+ ---
+
+  ## About Me
+
+ I'm Mattia Mastroiacovo (Kedra), the creator of this project.
+ 
+I'm currently an undergraduate student majoring in Physics and Astrophysics at the
+ University of Florence. I don't actually have a background in the programming
+ languages used in this project, like TypeScript. I built this extension mainly
+ through architectural problem-solving and AI-assisted programming, learning the
+ necessary stack along the way. In fact, I built this extension to facilitate my
+ workflows for future projects.
+
+I saw this project as an opportunity to understand the processes involved in
+ building something far from my reality, and to learn how to manage bigger projects
+ using packages and Git (I actually learned a lot!).
+
+Suggestions and help to improve this project are very welcome through Issues or
+ e-mail (mattia.mastroiacovo02@gmail.com). Especially if you are an expert in this
+ field, I could learn a lot from a constructive dialogue.
+
+I hope you find this repo useful.
+
+Peace.
