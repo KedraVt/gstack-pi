@@ -48,7 +48,12 @@ export async function executeCurrentPhase(
   ctx.ui.setStatus("gstack", `${workflow.name}: ${phase.name} (${state.phaseIndex + 1}/${workflow.phases.length})`);
 
   const instructions = buildPhaseInstructions(phase, wfCtx);
-  pi.sendUserMessage(instructions);
+  // The executor runs inside tool/command handlers while the agent loop is
+  // streaming. pi requires an explicit delivery behavior in that case, or it
+  // throws "Agent is already processing. Specify streamingBehavior..." and the
+  // phase instructions are silently lost. "followUp" queues them as a fresh
+  // message after the current turn completes — the correct handoff semantic.
+  pi.sendUserMessage(instructions, { deliverAs: "followUp" });
 }
 
 export function buildResumeContext(state: WorkflowState): string {
