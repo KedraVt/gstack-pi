@@ -6,6 +6,17 @@ One extension, two layers:
 - **60 native browser tools** — headless Chromium via gstack, ~100ms/command
 - **Workflow orchestrator** — `/gstack` command that guides you through develop, investigate, QA, ship, and review pipelines
 
+## What's new (feat/skill-ingestion branch)
+
+- **Deterministic subagents** — specialists (scout/planner/worker/reviewer) are spawned by the orchestrator itself in isolated `pi` processes; delegation no longer depends on the model's discretion. The `subagent` tool remains for ad-hoc use.
+- **Interactive plan cycle** — scout explores → you are interviewed (grilling protocol rounds with recommended answers + office-hours judgment + eng-review rigor, ≤5 questions/round) → plan written to `.gstack/plans/<slug>.md` → your approval gate (`/gstack next`) → worker implements from the plan file.
+- **Manual decision gates** — `develop.plan` and `investigate.root-cause` pause for user approval before code is touched.
+- **Skill ingestion** — distilled methodology digests (~2K tokens) from gstack's SKILL.md files are injected by the workflow itself: full digest to whoever does the work, compact DoD+best-practices gates for verification and repeats.
+- **Documentation phases** — optional doc-update phase on `develop` and `ship` (Diataxis coverage map, chained generation for missing docs).
+- **`qa-report` workflow** — full QA methodology, report-only, never modifies code.
+- **`gstack_start` tool** — programmatic workflow entry point (usable by any agent, including subagents).
+- **Fixed**: phase instructions are now delivered with `followUp` streaming behavior — eliminates the "Agent is already processing" error that silently dropped phase handoffs.
+
 ## Requirements
 
 - [pi](https://github.com/earendil-works/pi) >= 0.82.0
@@ -48,14 +59,34 @@ The menu adapts to your git context:
 
 | Workflow | Phases | Use case |
 |----------|--------|----------|
-| `develop` | understand → plan → implement → QA → review → ship | Full feature cycle |
-| `investigate` | reproduce → root-cause → fix → verify → QA (optional) | Systematic debugging |
-| `qa` | setup → browser test → report → fix (optional) | Browser-based QA |
-| `ship` | pre-checks → review → test → push+PR → verify CI | Release pipeline |
+| `develop` | understand → explore → **plan (interactive)** → implement → QA → review → ship → docs (opt.) | Full feature cycle |
+| `investigate` | reproduce → root-cause (⏸ gate) → fix → verify → regression QA (opt.) | Systematic debugging |
+| `qa` | setup → browser test → report → fix (opt.) | Browser-based QA with fixes |
+| `qa-report` | setup → browser test → report — **never modifies code** | QA report without fixes |
+| `ship` | pre-checks → review → test → push+PR → verify CI → docs (opt.) | Release pipeline |
 | `review` | diff analysis → findings → fix (optional) | Code review |
 | `quick` | single action picker | One-shot actions |
 
-Each phase runs either in the main agent context (analysis, verification) or delegates to a subagent (implementation, heavy testing). The orchestrator injects structured instructions and advances automatically when you call `gstack_advance`.
+⏸ = decision phase: the workflow pauses in `awaiting_approval` until you run `/gstack next`.
+
+Each phase runs either in the main agent context (analysis, verification, planning) or is delegated deterministically to a spawned specialist subagent — scout / planner / worker / reviewer (implementation, exploration, heavy testing). The orchestrator injects structured instructions and advances when the model calls `gstack_advance`; it can never bypass a manual gate.
+
+### The interactive plan cycle (`develop`)
+
+1. **understand** — requirements analysis in the main context
+2. **explore** — the scout subagent gathers codebase facts (its own context window)
+3. **plan** — *you are interviewed*. Using the grilling protocol (design-tree rounds of ≤5 questions, each with a recommended answer), office-hours product judgment, and plan-eng-review rigor, the orchestrator converges on scope with you and writes `.gstack/plans/<slug>.md`
+4. ⏸ you read the actual plan file, then `/gstack next`
+5. **implement** — worker reads the plan file directly; QA, review, ship and docs follow autonomously
+
+### Skill methodology injection
+
+The workflow decides when skill knowledge applies — the model never has to guess:
+
+- Every mapped phase carries a **distilled digest** (~2K tokens) extracted from the corresponding gstack SKILL.md (`skills-distilled/`)
+- Main phases embed the full digest; subagent phases receive it inside their task string while orchestrator instructions carry only the compact **DoD + best-practices gate**
+- Repeated deliveries within one run degrade to the DoD gate (~40% skill-token savings)
+- Wired skills: investigate, qa, review, ship, office-hours, plan-eng-review, document-release (+generate), grilling. All 23 bundled skills stay manually invocable via `/skill:gstack-*`.
 
 ### Automatic routing
 
@@ -65,8 +96,13 @@ The extension monitors your input and suggests workflows when it detects intent:
 - "let's ship this" → suggests `ship`
 - "build a new dashboard" → suggests `develop`
 - "test the site" → suggests `qa`
+- "just report the bugs, don't fix" → suggests `qa-report`
 
 Suggestions are advisory — the LLM asks before starting a workflow. Slash commands and short inputs are never intercepted.
+
+### Programmatic start
+
+Any agent — including spawned subagents, which load this extension too — can bootstrap a workflow with the `gstack_start { workflow, goal }` tool.
 
 ### Browser tools (60)
 
@@ -158,29 +194,35 @@ gstack-pi/
 ├── tools.generated.ts       60 browser tool registrations (auto-generated)
 ├── lib/
 │   ├── browse.ts            Binary resolution + subprocess spawn
+│   ├── download.ts          Auto-download browse binary from GitHub Releases
 │   ├── commands.ts          Allowlist re-export
 │   ├── commands.generated.ts  Allowed command set (auto-generated)
 │   └── schemas.ts           TypeBox parameter schemas
 ├── orchestrator/
-│   ├── index.ts             Registers /gstack, gstack_advance, input router
+│   ├── index.ts             Registers /gstack, gstack_advance, gstack_start, input router
 │   ├── types.ts             Workflow, Phase, State interfaces
-│   ├── state.ts             State machine (persist via pi appendEntry)
+│   ├── state.ts             State machine (persist via pi appendEntry; approval gates)
 │   ├── git.ts               Git context detection
-│   ├── workflows.ts         6 workflow definitions (data-driven)
-│   ├── templates.ts         Phase instruction builders
-│   ├── executor.ts          Phase execution + skip logic
-│   ├── command.ts           /gstack command handler
+│   ├── workflows.ts         7 workflow definitions (data-driven, skill mappings)
+│   ├── templates.ts         Phase instruction builders + skill tiering + plan-file protocol
+│   ├── executor.ts          Phase execution, deterministic subagent delegation, skip logic
+│   ├── skills.ts            Skill registry: digests, DoD gates, paths
+│   ├── spawn.ts             Deterministic subagent execution (pi --mode json)
+│   ├── config.ts            Feature flags (GSTACK_PI_SKILLS / _DETERMINISTIC / _MANUAL_GATES)
+│   ├── command.ts           /gstack command handler (+ /gstack next)
 │   └── router.ts            Input intent detection (transform, never block)
+├── skills-distilled/        Distilled methodology digests (~2K tokens each) + vendored grilling protocol
 ├── source/                  Git submodule → garrytan/gstack
 ├── runtime/                 Built by update.sh (gitignored)
 │   ├── browse/dist/         Compiled browse binary + server bundle
 │   └── bin/                 9 essential gstack helper scripts
-├── skills/                  23 cherry-picked SKILL.md files
+├── skills/                  23 cherry-picked SKILL.md files (manual /skill:gstack-* use)
 ├── scripts/
 │   ├── gen-tools.ts         Regenerate tools from source/ commands
 │   └── sync-skills.ts       Re-sync skills with path rewriting
 ├── test/
-│   └── orchestrator.test.ts Unit tests (state machine, workflows, intents)
+│   └── orchestrator.test.ts Unit tests (state machine, gates, workflows, tiering, intents)
+├── FUTURE_UPDATES.md        Deliberately deferred features & skill integrations
 ├── update.sh                Pull submodule + build + deploy + feature detection
 └── .gitignore               Excludes runtime/ (built artifacts)
 ```
@@ -188,18 +230,22 @@ gstack-pi/
 ### How the orchestrator works
 
 ```
-/gstack (command)  ──┐
-                     ├──→ State Machine ──→ Phase Executor ──→ sendUserMessage()
-input router ────────┘         ↑                                    │
-                               │                                    ↓
-                     gstack_advance ←──── LLM executes phase ←── instructions
+/gstack or gstack_start ──┐
+                          ├──→ State Machine ──→ Phase Executor ──► main phase:
+input router ─────────────┘         ↑                              instructions to LLM
+                                    │                                    │
+                     manual gate? ──┤                       subagent phase: spawn
+                       yes: pause   │                       specialists first, then
+                       (/gstack next)│                      prefix their output
+                                    │                                    ↓
+                      gstack_advance ←──── LLM executes/reviews ←── instructions
 ```
 
-1. User starts a workflow via `/gstack` or the router suggests one
-2. The orchestrator injects phase instructions into the LLM context
-3. The LLM executes (using browser tools, subagents, bash, etc.)
-4. The LLM calls `gstack_advance` with a summary
-5. The state machine advances to the next phase
+1. User starts a workflow via `/gstack`, `gstack_start`, or the router suggests one
+2. The orchestrator injects phase instructions into the LLM context (`followUp` delivery — never mid-turn)
+3. Subagent phases are executed by the orchestrator itself: specialists run in isolated `pi` processes and their output is prefixed for review
+4. The LLM calls `gstack_advance` with a summary — this is the only progression mechanism; it must never defer back to the user
+5. Auto phases advance immediately; decision phases (`develop.plan`, `investigate.root-cause`) park in `awaiting_approval` until you run `/gstack next`
 6. Repeat until all phases complete
 
 State persists across session reloads via pi's `appendEntry` (not sent to LLM context).
@@ -209,8 +255,16 @@ State persists across session reloads via pi's `appendEntry` (not sent to LLM co
 | | Per-session fixed | Per-phase |
 |---|---|---|
 | Browser tools | ~180 tokens (tool descriptions) | 0 |
-| Orchestrator | ~150 tokens (gstack_advance) | ~600-1000 (instructions) |
-| Skills (if loaded) | ~7300 tokens each | 0 |
+| Orchestrator | ~150 tokens (advance/start) | ~600-1000 (instructions) |
+| Skill digests | 0 (on disk) | full digest on first delivery (main phases); DoD gate only for subagent-phase verification and repeats (~2K vs ~7K per full skill load) |
+
+## Branches & feature flags
+
+- `main` — pre-upgrade behavior (advisory subagent hints, no skill injection). Switch with `git checkout main` in the extension folder, then restart pi.
+- `feat/skill-ingestion` — everything documented here.
+- Runtime kill switches (env): `GSTACK_PI_SKILLS=off`, `GSTACK_PI_DETERMINISTIC=off`, `GSTACK_PI_MANUAL_GATES=off`.
+
+Deferred ideas live in `FUTURE_UPDATES.md`.
 
 ## Security
 
