@@ -20,6 +20,19 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const OUTPUT_CAP = 50 * 1024;
 
+/**
+ * Per-subagent timeout. Default 20 min; override with
+ * GSTACK_PI_SUBAGENT_TIMEOUT (seconds, e.g. "300" for 5 min).
+ */
+function defaultTimeoutMs(): number {
+  const raw = process.env.GSTACK_PI_SUBAGENT_TIMEOUT;
+  if (raw) {
+    const secs = Number(raw);
+    if (Number.isFinite(secs) && secs > 0) return secs * 1000;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
+
 export interface AgentDef {
   name: string;
   description: string;
@@ -225,6 +238,7 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
     args.push(`Task: ${req.task}`);
 
       let aborted = false;
+    let timedOut = false;
     const exitCode = await new Promise<number>((resolve) => {
       const invocation = resolvePiInvocation(args);
       const proc = spawn(invocation.command, invocation.args, {
@@ -258,8 +272,8 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
         stderr += data.toString();
       });
 
-      const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const timer = setTimeout(() => {
+      const timeoutMs = req.timeoutMs ?? defaultTimeoutMs();`n      const timer = setTimeout(() => {
+        timedOut = true;
         try {
           proc.kill("SIGTERM");
           setTimeout(() => proc.kill("SIGKILL"), 5000);
@@ -299,6 +313,15 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
     });
 
     const rawOutput = aborted ? "" : extractFinalOutput(collected);
+    if (timedOut) {
+      return {
+        ok: false,
+        output: "",
+        error: `Subagent "${req.agent}" timed out after ${Math.round(timeoutMs / 1000)}s (limit configurable via GSTACK_PI_SUBAGENT_TIMEOUT, in seconds).`,
+        exitCode,
+        durationMs: Date.now() - started,
+      };
+    }
     const output =
       rawOutput.length > OUTPUT_CAP ? `${rawOutput.slice(0, OUTPUT_CAP)}\n…(truncated)` : rawOutput;
 
