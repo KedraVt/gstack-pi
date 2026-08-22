@@ -1,0 +1,36 @@
+{
+  "name": "@kedra/gstack-pi",
+  "version": "2.0.0",
+  "description": "gstack browser tools + workflow orchestrator for pi coding agent",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "files": [
+    "index.ts",
+    "tools.generated.ts",
+    "lib/",
+    "orchestrator/",
+    "skills/",
+    "scripts/",
+    "update.sh"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "gen:tools": "bun run scripts/gen-tools.ts",
+    "sync:skills": "bun run scripts/sync-skills.ts",
+    "test": "bun test test/orchestrator.test.ts"
+  }
+}
