@@ -7,6 +7,39 @@ import { loadSkillDigest, getSkillInfo, buildSkillIndex, getSkillIds } from "../
 import { buildPhaseInstructions, buildDeterministicPlan, planFilePath } from "../orchestrator/templates.ts";
 import type { WorkflowContext, WorkflowPhase } from "../orchestrator/types.ts";
 import { launchPhase, ctxAlive } from "../orchestrator/executor.ts";
+import { activityLabelFromEvent } from "../orchestrator/spawn.ts";
+
+// --- Live subagent activity labels ----------------------------------------
+
+test("activityLabelFromEvent: tool_execution_start yields tool + target", () => {
+  const label = activityLabelFromEvent({
+    type: "tool_execution_start",
+    toolName: "read",
+    args: { path: "src/app.ts" },
+  });
+  assert.ok(label!.includes("read"));
+  assert.ok(label!.includes("src/app.ts"));
+});
+
+test("activityLabelFromEvent: assistant message_start yields thinking", () => {
+  const label = activityLabelFromEvent({ type: "message_start", message: { role: "assistant" } });
+  assert.equal(label, "thinking…");
+});
+
+test("activityLabelFromEvent: assistant message_end yields text preview", () => {
+  const label = activityLabelFromEvent({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "The root cause is\nthe retry loop." }] },
+  });
+  assert.ok(label!.startsWith("writing:"));
+});
+
+test("activityLabelFromEvent: unknown or malformed events yield null safely", () => {
+  assert.equal(activityLabelFromEvent({ type: "turn_start" }), null);
+  assert.equal(activityLabelFromEvent(null), null);
+  assert.equal(activityLabelFromEvent(undefined), null);
+  assert.equal(activityLabelFromEvent("garbage"), null);
+});
 
 // --- Runtime liveness guards (session reload crash fix) -------------------
 

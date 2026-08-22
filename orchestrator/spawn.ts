@@ -39,6 +39,45 @@ export interface SpawnRequest {
    * reloaded mid-run) the child process is killed and the run aborts.
    */
   shouldAbort?: () => boolean;
+  /**
+   * Live activity feed from the child's JSON event stream (current tool call,
+   * assistant text preview). Lets the orchestrator show progress without a
+   * tool-renderer — deterministic spawns run outside any tool call.
+   */
+  onActivity?: (label: string) => void;
+}
+
+/**
+ * Derive a short human-readable activity label from one JSON stream event.
+ * Defensive by design: the stream schema is pi-internal, so every access is
+ * guarded and unknown shapes simply yield no label.
+ */
+export function activityLabelFromEvent(event: any): string | null {
+  try {
+    if (event?.type === "tool_execution_start") {
+      const name = event.toolName ?? event.name ?? event.tool?.name ?? "tool";
+      const args = event.args ?? event.input ?? event.tool?.args ?? {};
+      const target =
+        args.file_path ?? args.path ?? args.command ?? args.pattern ?? args.url ?? args.query ?? "";
+      return target ? `${name}: ${String(target).slice(0, 48)}` : String(name);
+    }
+    if (event?.type === "message_start" && event.message?.role === "assistant") {
+      return "thinking…";
+    }
+    if (event?.type === "message_end" && event.message?.role === "assistant") {
+      const content = event.message.content;
+      const text = Array.isArray(content)
+        ? content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join(" ")
+        : typeof content === "string"
+          ? content
+          : "";
+      const t = String(text).trim().replace(/\s+/g, " ");
+      return t ? `writing: ${t.slice(0, 48)}` : null;
+    }
+  } catch {
+    /* malformed event — no label */
+  }
+  return null;
 }
 
 export interface SpawnResult {
@@ -202,6 +241,8 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
           if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
             collected.push(event.message);
           }
+          const label = activityLabelFromEvent(event);
+          if (label) req.onActivity?.(label);
         } catch {
           /* not JSON — ignore */
         }

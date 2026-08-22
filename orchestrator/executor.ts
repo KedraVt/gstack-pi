@@ -135,6 +135,12 @@ export async function executeCurrentPhase(
     const results = await runDeterministicDelegation(phase, wfCtx, ctx, alive);
     if (!alive()) return;
     delegationPrefix = formatDelegationResults(phase.id, results);
+    // Restore the phase status line (delegation left subagent progress there).
+    try {
+      ctx.ui.setStatus("gstack", `${workflow.name}: ${phase.name} (${state.phaseIndex + 1}/${workflow.phases.length})`);
+    } catch {
+      /* stale ctx */
+    }
   }
 
   const instructions = buildPhaseInstructions(phase, wfCtx);
@@ -169,7 +175,7 @@ async function runDeterministicDelegation(
   const plan = buildDeterministicPlan(phase as any, wfCtx);
   const out: Array<{ agent: string; result: SpawnResult }> = [];
   let previous = "";
-  for (const step of plan) {
+  for (const [index, step] of plan.entries()) {
     if (!alive()) break; // session reloaded mid-chain — stop spawning work
     const task = step.task.replace(/\{previous\}/g, previous || "(no prior output)");
     try {
@@ -177,7 +183,30 @@ async function runDeterministicDelegation(
     } catch {
       /* stale ctx — keep working, notifications are best-effort */
     }
-    const result = await runSubagent({ agent: step.agent, task, cwd: wfCtx.cwd, shouldAbort: () => !alive() });
+
+    // Live progress in the status bar (deterministic spawns have no tool
+    // renderer, so the status line is the real-time view).
+    const stepStart = Date.now();
+    const setStatus = (extra: string) => {
+      try {
+        const secs = Math.round((Date.now() - stepStart) / 1000);
+        ctx.ui.setStatus(
+          "gstack",
+          `subagent ${step.agent} (${index + 1}/${plan.length}) · ${secs}s — ${extra}`,
+        );
+      } catch {
+        /* stale ctx */
+      }
+    };
+    setStatus("starting…");
+
+    const result = await runSubagent({
+      agent: step.agent,
+      task,
+      cwd: wfCtx.cwd,
+      shouldAbort: () => !alive(),
+      onActivity: setStatus,
+    });
     out.push({ agent: step.agent, result });
     previous = result.output || result.error || "";
   }
