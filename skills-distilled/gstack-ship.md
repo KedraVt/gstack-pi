@@ -25,20 +25,30 @@ Non-interactive, fully automated. Run straight through and output the PR URL at 
 
 1. Sync with base: `git fetch origin <base>` ; if behind, rebase or merge-base update.
 2. Run the full test suite (detect command from package.json scripts / Makefile / CI config). All must pass — new failures block the ship; pre-existing failures are triaged and reported, not auto-blocking.
-3. Coverage sanity: new/changed logic paths should have tests; flag gaps in the PR body rather than blocking.
+3. **Coverage audit**: new/changed logic paths must have tests. Audit the diff against existing test files: list untested branches explicitly. Gaps within reason → generate the missing tests and commit them; larger gaps → flag in the PR body rather than blocking.
+4. **Pre-landing review gate**: a code review of this diff must have completed without open CRITICAL findings before pushing. If it hasn't happened in this workflow, do a rapid structural pass yourself and report its verdict.
 
-## Step 4 — Push & PR
+## Step 4 — TODOS.md management (mandatory)
+
+1. Read `TODOS.md` if present. Mark items completed by this branch's work (move to a Completed section or check off, preserving history).
+2. Add new TODOS for deliberate follow-up work discovered while shipping (known gaps, deferred polish) — one line each, actionable wording.
+3. If `TODOS.md` doesn't exist but follow-ups were found, create it with those items.
+
+## Step 5 — Push & PR
 
 1. Push with upstream tracking.
 2. Create PR via `gh pr create` (GitHub) or `glab mr create` (GitLab) with:
    - Clear title (imperative mood, what changed)
    - Body: what & why, how to test, coverage notes, flagged gaps
-   - Reference related issues
+   - Reference related issues; mention TODOS.md additions
 3. If a PR already exists for the branch, update its body instead of creating a duplicate (idempotent re-run).
 
-## Step 5 — Verify CI
+## Git best practices throughout
 
-Check CI status after push (`gh pr checks` / pipeline status). Report status honestly: passing, pending, or failing with details.
+- Atomic, bisectable commits — one logical change each; imperative-mood subjects.
+- Never `git add -A`; stage intentional files only.
+- Never commit broken tests or mid-edit state.
+- Force-push only your own unshared feature branch, never shared branches.
 
 ## Output format
 
@@ -49,7 +59,9 @@ SHIP REPORT
 Branch:      [branch]
 Commits:     [count after hygiene]
 Tests:       [pass/fail counts]
+Coverage:    [gaps found → fixed / flagged]
+TODOS.md:    [updated / created / n/a]
 PR:          [url]
-CI:          [status]
+CI:          [status if checkable]
 Status:      SHIPPED | BLOCKED_[reason]
 ```

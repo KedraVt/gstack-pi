@@ -10,7 +10,7 @@ Test web applications like a real user — click everything, fill every form, ch
 
 1. Determine target URL (ask the user in your final report if unknown; try dev-server defaults first). If on a feature branch, prioritize testing the changed flows.
 2. Check for a clean-enough working tree; note pre-existing state before making changes.
-3. Detect the project's test framework (`jest.config.*`, `vitest.config.*`, `playwright.config.*`, `pytest.ini`, test/ dirs). If a framework exists, read 2-3 existing tests to learn conventions. If none exists, note it and rely on browser evidence.
+3. **Test-framework bootstrap**: detect the project's test framework (`jest.config.*`, `vitest.config.*`, `playwright.config.*`, `.rspec`, `pytest.ini`, `phpunit.xml`, test/ dirs). If a framework exists, read 2-3 existing tests to learn conventions (naming, imports, assertion style, setup). If a runtime exists but no framework, note it in the report — do not scaffold a framework unilaterally. If no runtime is detectable at all, say so and rely on browser evidence.
 
 ## Test pass (Standard tier)
 
@@ -37,7 +37,11 @@ Tier policy: fix CRITICAL + HIGH always; MEDIUM when time allows (standard); LOW
 
 1. Fix in source code with **atomic commits** (one logical fix per commit).
 2. Re-verify each fix in the browser before moving to the next.
-3. Add a regression test when the project has test infrastructure.
+3. **Regression tests — bounded rule**: one regression test per CRITICAL or HIGH fix, following the project's existing test conventions. Skip when no framework exists (say so in the report). Never let test generation balloon beyond the fixes found.
+
+## Report-only variant
+
+In REPORT-ONLY mode: run the full test pass and classification exactly as above, but do NOT fix anything and do NOT commit. The report is the entire deliverable; add a `Recommended fix` line per bug instead.
 
 ## Report format
 
@@ -48,6 +52,7 @@ Flows covered:  [list]
 Bugs found:     N total (C critical / H high / M medium / L low)
 Fixed:          [list with commit refs + re-verification status]
 Not fixed:      [list with severity + reason]
+Regression:     [tests added, or "n/a (no framework)" / "n/a (report-only)"]
 Evidence:       [screenshot paths]
 Verdict:        PASS | PASS_WITH_ISSUES | FAIL
 ```

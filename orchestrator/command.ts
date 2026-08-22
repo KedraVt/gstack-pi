@@ -137,6 +137,8 @@ function menuScore(w: { id: string }, git: GitContext): number {
       return git.aheadOfRemote > 0 ? 8 : 3;
     case "qa":
       return 5;
+    case "qa-report":
+      return 4;
     case "develop":
       return git.isMainBranch ? 6 : 4;
     case "quick":

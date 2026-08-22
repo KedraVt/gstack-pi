@@ -6,8 +6,10 @@ export interface WorkflowPhase {
   chain?: Array<{ agent: string; task: string }>;
   optional: boolean;
   skipWhen?: (ctx: WorkflowContext) => boolean;
-  /** Distilled skill digest injected by the orchestrator (id from skills registry). */
-  skill?: string;
+  /** Distilled skill digests injected by the orchestrator (ids from the skills registry). */
+  skills?: string[];
+  /** Phase behavior variant, e.g. "report-only" for QA phases. */
+  variant?: string;
   /**
    * Advancement policy. "auto" (default): the workflow proceeds as soon as the
    * phase completes via gstack_advance. "manual": after completion the
@@ -40,6 +42,8 @@ export interface WorkflowState {
   status: "active" | "paused" | "completed" | "aborted" | "awaiting_approval";
   goal: string;
   results: Record<string, PhaseResult>;
+  /** Skill digests already delivered in full during this run — repeats get the DoD gate only. */
+  skillsDelivered?: string[];
 }
 
 export interface GitContext {

@@ -1,7 +1,22 @@
 import type { WorkflowPhase, WorkflowContext, Workflow } from "./types.ts";
 import { getWorkflow } from "./workflows.ts";
-import { loadSkillDigest, getSkillInfo } from "./skills.ts";
-import { skillsEnabled, manualGates } from "./config.ts";
+import { loadSkillDigest, getSkillInfo, type SkillInfo } from "./skills.ts";
+import { skillsEnabled, manualGates, deterministicSubagents } from "./config.ts";
+
+/** Deterministic slug for the plan file written by the interactive planning phase. */
+export function planFileSlug(goal: string): string {
+  return (
+    goal
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "plan"
+  );
+}
+
+export function planFilePath(goal: string): string {
+  return `.gstack/plans/${planFileSlug(goal)}.md`;
+}
 
 export function buildPhaseInstructions(phase: WorkflowPhase, ctx: WorkflowContext): string {
   const workflow = getWorkflow(ctx.state.workflowId);
@@ -25,11 +40,25 @@ export function buildPhaseInstructions(phase: WorkflowPhase, ctx: WorkflowContex
 
   if (phase.execution === "main") {
     parts.push(buildMainInstructions(phase, ctx));
+  } else if (deterministicSubagents()) {
+    // The executor has already spawned the specialists; their output arrives
+    // above these instructions. Do not ask the model to delegate again — and
+    // do not echo the skill-laden task JSON into orchestrator context.
+    parts.push(
+      "### Delegated execution",
+      "This phase's specialist work was already dispatched deterministically by the orchestrator. Review the subagent output above, verify it against the skill gates below, and summarize.",
+    );
   } else {
     parts.push(buildSubagentInstructions(phase, ctx));
   }
 
-  const skillBlock = buildSkillBlock(phase);
+  // Skill knowledge tiering:
+  //  - main phases work with the methodology themselves → full digest,
+  //    unless it was already delivered earlier in this run (then DoD gate only);
+  //  - subagent phases: the FULL digest travels inside the specialist's task
+  //    (isolated context), while the orchestrator only needs the DoD gate to
+  //    verify the output.
+  const skillBlock = buildOrchestratorSkillBlock(phase, ctx);
   if (skillBlock) {
     parts.push("");
     parts.push(skillBlock);
@@ -61,32 +90,79 @@ function buildAdvancementRule(phase: WorkflowPhase): string {
   return lines.join("\n");
 }
 
+function variantDirective(phase: WorkflowPhase): string | null {
+  if (phase.variant === "report-only") {
+    return "**REPORT-ONLY MODE**: test and classify exactly as instructed, but do NOT fix anything and do NOT commit. The report is the entire deliverable; add a `Recommended fix` line per bug.";
+  }
+  return null;
+}
+
 /**
- * Skill methodology injection. The orchestrator decides when skill knowledge
- * applies and embeds the distilled digest directly — the agent does not need
- * to know whether a skill should be loaded.
+ * Skill blocks shown in ORCHESTRATOR instructions.
  */
-function buildSkillBlock(phase: WorkflowPhase): string | null {
-  if (!skillsEnabled() || !phase.skill) return null;
-  const digest = loadSkillDigest(phase.skill);
-  const info = getSkillInfo(phase.skill);
-  const parts: string[] = ["### Skill methodology: " + phase.skill];
-  if (digest) {
-    parts.push(digest);
-  } else if (info) {
-    // Graceful degradation: digest missing → point at the full skill doc.
-    parts.push(`Read and follow the full methodology at: ${info.fullPath}`);
-  } else {
-    return null;
+function buildOrchestratorSkillBlock(phase: WorkflowPhase, ctx: WorkflowContext): string | null {
+  if (!skillsEnabled() || !phase.skills || phase.skills.length === 0) {
+    const vd = variantDirective(phase);
+    return vd ? [vd].join("\n") : null;
   }
-  if (info) {
-    parts.push(`(Full skill documentation for deep consultation: ${info.fullPath})`);
+
+  const delivered = ctx.state.skillsDelivered ?? [];
+  const parts: string[] = [];
+  const isSubagentPhase = phase.execution === "subagent";
+
+  for (const id of phase.skills) {
+    const info = getSkillInfo(id);
+    if (!info) continue;
+    parts.push(`#### Skill gate: ${id}`);
+
+    const alreadyDelivered = delivered.includes(id);
+    const wantFullDigest =
+      !isSubagentPhase && !alreadyDelivered;
+
+    if (wantFullDigest) {
+      const digest = loadSkillDigest(id);
+      if (digest) {
+        parts.push(digest);
+        if (info.fullPath) {
+          parts.push(`(Full skill documentation for deep consultation: ${info.fullPath})`);
+        }
+        continue;
+      }
+      // digest missing → fall through to pointer/gate
+      if (info.fullPath) {
+        parts.push(`Read and follow the full methodology at: ${info.fullPath}`);
+        continue;
+      }
+    }
+
+    // Subagent phase or repeat delivery: compact DoD + best-practices gate.
+    parts.push(info.dod);
+    if (!isSubagentPhase && alreadyDelivered) {
+      parts.push("(Full methodology delivered in an earlier phase — follow the same rules.)");
+    }
   }
-  return parts.join("\n");
+
+  const vd = variantDirective(phase);
+  if (vd) parts.push(vd);
+
+  return parts.length > 0 ? parts.join("\n") : null;
 }
 
 function buildMainInstructions(phase: WorkflowPhase, ctx: WorkflowContext): string {
   const templates: Record<string, (ctx: WorkflowContext) => string> = {
+    "plan": (c) => [
+      "### Instructions — Interactive Planning",
+      "You are conducting the planning interview. The scout's codebase findings are in your context above.",
+      "",
+      "**Interview protocol (grilling)**: map decisions as a design tree; work in rounds over the frontier (questions whose prerequisites are settled). Each round: number the questions, give YOUR recommended answer under each, then STOP and wait for the user's replies.",
+      "- Maximum 5 questions per round; only questions that change architecture or scope.",
+      "- Never ask the user for a fact you can look up yourself (use the scout output or tools).",
+      "- Apply office-hours judgment: challenge vague premises, demand specificity, push for the narrowest shippable scope.",
+      "- Apply engineering rigor: blast radius, hidden assumptions, edge cases, test strategy; complexity gate at 8+ files or 2+ new services.",
+      "",
+      "**Termination**: when the frontier is empty (or answers are exhausted), write the converged plan to `" + planFilePath(c.state.goal) + "` following the Plan file contract in the skill gates below, summarize it briefly to the user, then call gstack_advance. Do NOT start implementing.",
+    ].join("\n"),
+
     "understand": (c) => [
       "### Instructions",
       "Analyze the user's goal and the current codebase to establish shared understanding:",
@@ -214,7 +290,8 @@ function buildSubagentInstructions(phase: WorkflowPhase, ctx: WorkflowContext): 
 
 function buildAgentTask(phase: WorkflowPhase, ctx: WorkflowContext): string {
   const tasks: Record<string, string> = {
-    "implement": `Implement the following feature/plan: {goal}.\n\nContext from prior phases:\n{plan_summary}\n\nWrite production-quality code. Run tests after implementation. Report what was implemented and any issues.`,
+    "explore": `Explore the codebase relevant to this goal: {goal}.\n\nFind all code that matters: entry points, affected modules, existing patterns, architecture constraints, test infrastructure. Report file paths (absolute), key functions, patterns to follow, and anything surprising. Facts only — no design proposals.`,
+    "implement": `Implement the approved plan.\n\nThe full plan is in the file: {plan_file}. Read it FIRST and follow it — it contains the goal, scope, architecture, files to change, edge cases, and test strategy agreed with the user.\n\nContext from prior phases:\n{plan_summary}\n\nWrite production-quality code. Run tests after implementation. Report what was implemented, any deviations from the plan (and why), and any issues.`,
     "qa": `QA test the following: {goal}.\n\nUse the gstack browser tools (gstack_goto, gstack_snapshot, gstack_click, gstack_screenshot, etc.) to test user flows. Take screenshots as evidence. Report all bugs found with severity.`,
     "review": `Review the code changes for: {goal}.\n\nRun git diff to see changes. Check for: bugs, security issues, performance problems, style violations, missing tests. Report findings categorized by severity.`,
     "ship": `Ship the current changes: {goal}.\n\n1. Ensure all changes are committed\n2. Push to remote\n3. Create a PR with a clear title and description\n4. Report the PR URL and any CI status`,
@@ -223,29 +300,35 @@ function buildAgentTask(phase: WorkflowPhase, ctx: WorkflowContext): string {
     "push-pr": `Push current branch and create a pull request.\n\nGoal context: {goal}\nPrior review summary: {review_summary}\n\n1. Push branch to remote\n2. Create PR via gh cli with title and body summarizing changes\n3. Report PR URL`,
     "diff": `Analyze the git diff for this branch.\n\nRun: git diff main...HEAD (or appropriate base branch).\nReport: files changed, lines added/removed, summary of what each change does, any concerns.`,
     "regression-qa": `Run regression QA after a bug fix: {goal}.\n\nUse browser tools to test adjacent functionality. Verify the fix didn't break other flows. Report findings.`,
+    "document": `Update the project documentation after this ship: {goal}.\n\n1. Analyze the branch diff against the base branch (git diff/log) and classify changes (new features / changed behavior / removed functionality)\n2. Discover all markdown docs (maxdepth 2, excluding .git/node_modules/.gstack)\n3. Build a Diataxis coverage map per changed area (tutorial / how-to / reference / explanation) and apply factual updates the diff dictates\n4. Where docs are missing entirely, research the code (read implementations end-to-end + tests) and write them following Diataxis; write reference docs first\n5. Sweep cross-doc consistency (versions, paths, counts, stale references)\n6. Commit doc updates as their own atomic commit with a docs: prefix\n7. Output the DOC REPORT block`,
   };
 
   let task = tasks[phase.id] ?? `Execute the "${phase.name}" phase for: {goal}. Use available tools and report results.`;
-  const withSkill = withSkillDigest(phase, task);
-  return withSkill;
+  const vd = phase.variant === "report-only"
+    ? "\n\n**REPORT-ONLY MODE**: do NOT fix anything and do NOT commit. The report is the entire deliverable."
+    : "";
+  return buildTaskSkills(phase, task + vd);
 }
 
 /**
- * Prepend the distilled skill digest to a subagent task string. Subagent
+ * Embed the full distilled digests into a subagent task string. Subagent
  * processes have isolated contexts — embedding the methodology in the task is
  * the only reliable way for them to receive it.
  */
-function withSkillDigest(phase: WorkflowPhase, task: string): string {
-  if (!skillsEnabled() || !phase.skill) return task;
-  const digest = loadSkillDigest(phase.skill);
-  const info = getSkillInfo(phase.skill);
-  if (digest) {
-    return `## Skill methodology: ${phase.skill} (follow this methodology; its output format is mandatory)\n\n${digest}\n\n---\n\n${task}`;
+function buildTaskSkills(phase: WorkflowPhase, task: string): string {
+  if (!skillsEnabled() || !phase.skills || phase.skills.length === 0) return task;
+  const blocks: string[] = [];
+  for (const id of phase.skills) {
+    const digest = loadSkillDigest(id);
+    const info = getSkillInfo(id);
+    if (digest) {
+      blocks.push(`## Skill methodology: ${id} (follow it; its output format is mandatory)\n\n${digest}`);
+    } else if (info?.fullPath) {
+      blocks.push(`## Skill methodology: ${id}\nBefore starting, read the file ${info.fullPath} and follow its methodology.`);
+    }
   }
-  if (info) {
-    return `Before starting, read the file ${info.fullPath} and follow its methodology. Its output format is mandatory.\n\n${task}`;
-  }
-  return task;
+  if (blocks.length === 0) return task;
+  return `${blocks.join("\n\n---\n\n")}\n\n---\n\n${task}`;
 }
 
 /**
@@ -257,7 +340,7 @@ export function buildDeterministicPlan(phase: WorkflowPhase, ctx: WorkflowContex
   if (phase.chain && phase.chain.length > 0) {
     return phase.chain.map((step) => ({
       agent: step.agent,
-      task: interpolate(step.task, ctx),
+      task: interpolate(buildTaskSkills(phase, step.task), ctx),
     }));
   }
   return [{ agent: phase.agent ?? "worker", task: interpolate(buildAgentTask(phase, ctx), ctx) }];
@@ -267,6 +350,7 @@ function interpolate(template: string, ctx: WorkflowContext): string {
   return template
     .replace(/\{goal\}/g, ctx.state.goal)
     .replace(/\{branch\}/g, ctx.git.branch)
+    .replace(/\{plan_file\}/g, planFilePath(ctx.state.goal))
     .replace(/\{(\w+)_summary\}/g, (_, phaseId: string) =>
       ctx.state.results[phaseId]?.summary ?? "(not yet available)");
 }

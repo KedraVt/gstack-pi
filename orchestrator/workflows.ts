@@ -17,16 +17,21 @@ const develop: Workflow = {
       optional: false,
     },
     {
-      id: "plan",
-      name: "Architecture & Plan",
+      id: "explore",
+      name: "Codebase Exploration",
       execution: "subagent",
-      chain: [
-        { agent: "scout", task: "Find all code relevant to this feature request: {goal}. Report file paths, key functions, existing patterns, and architecture constraints." },
-        { agent: "planner", task: "Create a detailed implementation plan for: {goal}. Use this codebase context: {previous}. Output: files to modify, new files, data flow, risks, and test strategy." },
-      ],
+      agent: "scout",
       optional: false,
-      // Decision phase: the user reviews the plan before any code is written.
+    },
+    {
+      id: "plan",
+      name: "Interactive Planning",
+      execution: "main",
+      optional: false,
+      // Decision phase: interview rounds with the user, then the written
+      // plan is reviewed before any code is written.
       advance: "manual",
+      skills: ["gstack-office-hours", "grilling", "gstack-plan-eng-review"],
     },
     {
       id: "implement",
@@ -41,7 +46,7 @@ const develop: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: true,
-      skill: "gstack-qa",
+      skills: ["gstack-qa"],
     },
     {
       id: "review",
@@ -49,7 +54,7 @@ const develop: Workflow = {
       execution: "subagent",
       agent: "reviewer",
       optional: false,
-      skill: "gstack-review",
+      skills: ["gstack-review"],
     },
     {
       id: "ship",
@@ -57,7 +62,15 @@ const develop: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: true,
-      skill: "gstack-ship",
+      skills: ["gstack-ship"],
+    },
+    {
+      id: "document",
+      name: "Documentation Update",
+      execution: "subagent",
+      agent: "worker",
+      optional: true,
+      skills: ["gstack-document-release", "gstack-document-generate"],
     },
   ],
 };
@@ -78,7 +91,7 @@ const investigate: Workflow = {
       name: "Reproduce the Bug",
       execution: "main",
       optional: false,
-      skill: "gstack-investigate",
+      skills: ["gstack-investigate"],
     },
     {
       id: "root-cause",
@@ -89,7 +102,7 @@ const investigate: Workflow = {
         { agent: "planner", task: "Given this investigation context, identify the root cause and propose a minimal fix strategy: {previous}. Output: root cause, fix approach, files to change, regression risks." },
       ],
       optional: false,
-      skill: "gstack-investigate",
+      skills: ["gstack-investigate"],
       // Decision phase: the user approves the diagnosis before any fix is applied.
       advance: "manual",
     },
@@ -99,14 +112,14 @@ const investigate: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: false,
-      skill: "gstack-investigate",
+      skills: ["gstack-investigate"],
     },
     {
       id: "verify",
       name: "Verify Fix",
       execution: "main",
       optional: false,
-      skill: "gstack-investigate",
+      skills: ["gstack-investigate"],
     },
     {
       id: "regression-qa",
@@ -115,7 +128,7 @@ const investigate: Workflow = {
       agent: "worker",
       optional: true,
       skipWhen: (ctx) => !ctx.git.hasUncommittedChanges,
-      skill: "gstack-qa",
+      skills: ["gstack-qa"],
     },
   ],
 };
@@ -135,7 +148,7 @@ const qa: Workflow = {
       name: "Setup & Scope",
       execution: "main",
       optional: false,
-      skill: "gstack-qa",
+      skills: ["gstack-qa"],
     },
     {
       id: "test",
@@ -143,14 +156,14 @@ const qa: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: false,
-      skill: "gstack-qa",
+      skills: ["gstack-qa"],
     },
     {
       id: "report",
       name: "Bug Report",
       execution: "main",
       optional: false,
-      skill: "gstack-qa",
+      skills: ["gstack-qa"],
     },
     {
       id: "fix",
@@ -158,7 +171,7 @@ const qa: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: true,
-      skill: "gstack-qa",
+      skills: ["gstack-qa"],
     },
   ],
 };
@@ -178,7 +191,7 @@ const ship: Workflow = {
       name: "Pre-flight Checks",
       execution: "main",
       optional: false,
-      skill: "gstack-ship",
+      skills: ["gstack-ship"],
     },
     {
       id: "review",
@@ -186,7 +199,7 @@ const ship: Workflow = {
       execution: "subagent",
       agent: "reviewer",
       optional: false,
-      skill: "gstack-review",
+      skills: ["gstack-review"],
     },
     {
       id: "test",
@@ -194,7 +207,7 @@ const ship: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: false,
-      skill: "gstack-ship",
+      skills: ["gstack-ship"],
     },
     {
       id: "push-pr",
@@ -202,14 +215,22 @@ const ship: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: false,
-      skill: "gstack-ship",
+      skills: ["gstack-ship"],
     },
     {
       id: "verify",
       name: "Verify CI",
       execution: "main",
       optional: false,
-      skill: "gstack-ship",
+      skills: ["gstack-ship"],
+    },
+    {
+      id: "update-docs",
+      name: "Documentation Update",
+      execution: "subagent",
+      agent: "worker",
+      optional: true,
+      skills: ["gstack-document-release", "gstack-document-generate"],
     },
   ],
 };
@@ -235,7 +256,7 @@ const review: Workflow = {
       name: "Findings & Suggestions",
       execution: "main",
       optional: false,
-      skill: "gstack-review",
+      skills: ["gstack-review"],
     },
     {
       id: "fix",
@@ -243,7 +264,7 @@ const review: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: true,
-      skill: "gstack-review",
+      skills: ["gstack-review"],
     },
   ],
 };
@@ -265,7 +286,44 @@ const quick: Workflow = {
   ],
 };
 
-const ALL_WORKFLOWS: Workflow[] = [develop, investigate, qa, ship, review, quick];
+const qaReport: Workflow = {
+  id: "qa-report",
+  name: "QA Report (No Fixes)",
+  description: "Browser QA that tests and reports bugs with severity but never modifies code",
+  intents: [
+    { pattern: /\b(qa[- ]only|report[- ]only|just report (the )?bugs|don'?t fix,? (just )?test)\b/i, weight: 0.85 },
+    { pattern: /\b(test the site and report|find bugs without fixing)\b/i, weight: 0.7 },
+  ],
+  phases: [
+    {
+      id: "setup",
+      name: "Setup & Scope",
+      execution: "main",
+      optional: false,
+      skills: ["gstack-qa"],
+      variant: "report-only",
+    },
+    {
+      id: "test",
+      name: "Browser Testing",
+      execution: "subagent",
+      agent: "worker",
+      optional: false,
+      skills: ["gstack-qa"],
+      variant: "report-only",
+    },
+    {
+      id: "report",
+      name: "Bug Report",
+      execution: "main",
+      optional: false,
+      skills: ["gstack-qa"],
+      variant: "report-only",
+    },
+  ],
+};
+
+const ALL_WORKFLOWS: Workflow[] = [develop, investigate, qa, qaReport, ship, review, quick];
 
 export function getAllWorkflows(): Workflow[] {
   return ALL_WORKFLOWS;

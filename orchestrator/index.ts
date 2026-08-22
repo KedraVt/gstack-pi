@@ -115,10 +115,10 @@ export function initOrchestrator(pi: ExtensionAPI): void {
     name: "gstack_start",
     label: "Start Workflow",
     description:
-      "Start a gstack guided workflow programmatically. Workflows: develop, investigate, qa, ship, review, quick. Use when a task matches one of these pipelines and no workflow is currently active.",
-    promptSnippet: "Start a gstack workflow (develop, investigate, qa, ship, review, quick)",
+      "Start a gstack guided workflow programmatically. Workflows: develop, investigate, qa, qa-report, ship, review,develop \\| investigate \\| qa \\| qa-report \\| ship \\| review \\| quick. Use when a task matches one of these pipelines and no workflow is currently active.",
+    promptSnippet: "Start a gstack workflow (develop, investigate, qa, ship, review,develop \\| investigate \\| qa \\| qa-report \\| ship \\| review \\| quick)",
     parameters: Type.Object({
-      workflow: Type.String({ description: "Workflow id: develop | investigate | qa | ship | review | quick" }),
+      workflow: Type.String({ description: "Workflow id: develop | investigate | qa | ship | review |develop \\| investigate \\| qa \\| qa-report \\| ship \\| review \\| quick" }),
       goal: Type.String({ description: "What the workflow should accomplish" }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {

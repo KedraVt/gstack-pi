@@ -5,7 +5,7 @@ import { saveState, advancePhase, gateForApproval } from "./state.ts";
 import { buildPhaseInstructions, buildDeterministicPlan } from "./templates.ts";
 import { detectGitContext } from "./git.ts";
 import { runSubagent, type SpawnResult } from "./spawn.ts";
-import { deterministicSubagents } from "./config.ts";
+import { deterministicSubagents, skillsEnabled } from "./config.ts";
 
 export async function executeCurrentPhase(
   pi: ExtensionAPI,
@@ -59,6 +59,15 @@ export async function executeCurrentPhase(
   }
 
   const instructions = buildPhaseInstructions(phase, wfCtx);
+
+  // Record that this run has now DELIVERED these skill digests in full, so
+  // later phases of the same skill degrade to their compact DoD gate.
+  if (skillsEnabled() && phase.execution === "main" && phase.skills && phase.skills.length > 0) {
+    const delivered = new Set([...(state.skillsDelivered ?? []), ...phase.skills]);
+    const updated = { ...state, skillsDelivered: Array.from(delivered) };
+    saveState(pi, updated);
+  }
+
   // The executor runs inside tool/command handlers while the agent loop is
   // streaming. pi requires an explicit delivery behavior in that case, or it
   // throws "Agent is already processing. Specify streamingBehavior..." and the
