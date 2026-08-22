@@ -100,6 +100,8 @@ export interface SpawnResult {
   error?: string;
   exitCode: number | null;
   durationMs: number;
+  /** Number of tool calls the child executed — the real driver of wall time. */
+  toolCalls?: number;
 }
 
 function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
@@ -238,6 +240,7 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
     args.push(`Task: ${req.task}`);
 
       let aborted = false;
+    let toolCalls = 0;
     let timedOut = false;
     const exitCode = await new Promise<number>((resolve) => {
       const invocation = resolvePiInvocation(args);
@@ -255,6 +258,7 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
           if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
             collected.push(event.message);
           }
+          if (event?.type === 'tool_execution_start') toolCalls++;
           const label = activityLabelFromEvent(event);
           if (label) req.onActivity?.(label);
         } catch {
@@ -342,6 +346,7 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
       error: rawOutput ? undefined : "Subagent produced no output.",
       exitCode,
       durationMs: Date.now() - started,
+      toolCalls,
     };
   } catch (err: any) {
     return { ok: false, output: "", error: err?.message ?? String(err), exitCode: 1, durationMs: Date.now() - started };
