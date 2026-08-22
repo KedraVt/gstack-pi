@@ -34,6 +34,11 @@ export interface SpawnRequest {
   task: string;
   cwd: string;
   timeoutMs?: number;
+  /**
+   * Polled once per second; when it returns true (e.g. the session was
+   * reloaded mid-run) the child process is killed and the run aborts.
+   */
+  shouldAbort?: () => boolean;
 }
 
 export interface SpawnResult {
@@ -180,6 +185,7 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
     }
     args.push(`Task: ${req.task}`);
 
+      let aborted = false;
     const exitCode = await new Promise<number>((resolve) => {
       const invocation = resolvePiInvocation(args);
       const proc = spawn(invocation.command, invocation.args, {
@@ -210,11 +216,6 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
       proc.stderr.on("data", (data) => {
         stderr += data.toString();
       });
-      proc.on("close", (code) => {
-        if (buffer.trim()) processLine(buffer);
-        resolve(code ?? 0);
-      });
-      proc.on("error", () => resolve(1));
 
       const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const timer = setTimeout(() => {
@@ -226,9 +227,37 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
         }
       }, timeoutMs);
       timer.unref?.();
+
+      // Cooperative abort: if the parent chain is invalidated (session
+      // reload/switch), kill the child promptly instead of letting it run to
+      // completion for work nobody will read.
+      const abortPoll = setInterval(() => {
+        if (req.shouldAbort?.()) {
+          aborted = true;
+          clearInterval(abortPoll);
+          try {
+            proc.kill("SIGTERM");
+            setTimeout(() => proc.kill("SIGKILL"), 5000);
+          } catch {
+            /* ignore */
+          }
+        }
+      }, 1000);
+      abortPoll.unref?.();
+
+      const finish = (code: number) => {
+        clearInterval(abortPoll);
+        clearTimeout(timer);
+        resolve(code);
+      };
+      proc.on("close", (code) => {
+        if (buffer.trim()) processLine(buffer);
+        finish(aborted ? 130 : code ?? 0);
+      });
+      proc.on("error", () => finish(1));
     });
 
-    const rawOutput = extractFinalOutput(collected);
+    const rawOutput = aborted ? "" : extractFinalOutput(collected);
     const output =
       rawOutput.length > OUTPUT_CAP ? `${rawOutput.slice(0, OUTPUT_CAP)}\n…(truncated)` : rawOutput;
 
@@ -268,4 +297,3 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
     }
   }
 }
-

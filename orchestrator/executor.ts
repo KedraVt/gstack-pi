@@ -7,26 +7,94 @@ import { detectGitContext } from "./git.ts";
 import { runSubagent, type SpawnResult } from "./spawn.ts";
 import { deterministicSubagents, skillsEnabled } from "./config.ts";
 
+// --- Runtime liveness -------------------------------------------------------
+// Background phase chains (deterministic subagent runs) intentionally outlive
+// the tool/command handler that started them. But if the user reloads the
+// session mid-chain, pi invalidates the captured ExtensionContext; ANY later
+// ctx.ui access then throws "Extension ctx is stale…" and, being uncaught in a
+// floating promise, kills pi entirely (uncaughtException). These guards make
+// staleness detectable and non-fatal.
+
+/** Bumped whenever the session is replaced/reloaded/forked. */
+let runtimeEpoch = 0;
+
+export function invalidateRuntime(): void {
+  runtimeEpoch++;
+}
+
+/**
+ * Probe whether this context is still valid. Merely touching the `ui` getter
+ * triggers pi's assertActive(), which throws on stale contexts.
+ */
+export function ctxAlive(ctx: unknown): boolean {
+  try {
+    void (ctx as any).ui;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fire-and-forget phase execution. Errors are never allowed to become
+ * uncaught rejections: stale-context failures are dropped silently, anything
+ * else is reported best-effort (the report itself is guarded against a stale
+ * context).
+ */
+export function launchPhase(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: WorkflowState,
+  run: (pi: ExtensionAPI, ctx: ExtensionContext, state: WorkflowState) => Promise<void> = executeCurrentPhase,
+): void {
+  void run(pi, ctx, state).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/stale/i.test(msg)) return;
+    try {
+      ctx.ui.notify(`gstack error: ${msg}`, "error");
+    } catch {
+      /* context went stale while reporting — nothing left to do */
+    }
+  });
+}
+
 export async function executeCurrentPhase(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   state: WorkflowState,
 ): Promise<void> {
+  const startEpoch = runtimeEpoch;
+  const alive = (): boolean => runtimeEpoch === startEpoch && ctxAlive(ctx);
+  const notify = (msg: string, level: "info" | "warning" | "error") => {
+    try {
+      ctx.ui.notify(msg, level);
+    } catch {
+      /* stale ctx — drop the notification rather than crash */
+    }
+  };
+
+  if (!alive()) return;
+
   const workflow = getWorkflow(state.workflowId);
   if (!workflow) {
-    ctx.ui.notify(`Unknown workflow: ${state.workflowId}`, "error");
+    notify(`Unknown workflow: ${state.workflowId}`, "error");
     return;
   }
 
   const phase = workflow.phases[state.phaseIndex];
   if (!phase) {
     saveState(pi, { ...state, status: "completed" });
-    ctx.ui.setStatus("gstack", undefined);
-    ctx.ui.notify(`Workflow "${workflow.name}" completed!`, "info");
+    try {
+      ctx.ui.setStatus("gstack", undefined);
+    } catch {
+      /* stale ctx */
+    }
+    notify(`Workflow "${workflow.name}" completed!`, "info");
     return;
   }
 
   const git = await detectGitContext(ctx.cwd, pi);
+  if (!alive()) return;
   const wfCtx: WorkflowContext = { state, git, cwd: ctx.cwd };
 
   if (phase.skipWhen?.(wfCtx)) {
@@ -36,10 +104,16 @@ export async function executeCurrentPhase(
   }
 
   if (phase.optional) {
-    const run = await ctx.ui.confirm(
-      `Optional phase: ${phase.name}`,
-      `Run the "${phase.name}" phase? (Skip to continue without it)`,
-    );
+    let run: boolean;
+    try {
+      run = await ctx.ui.confirm(
+        `Optional phase: ${phase.name}`,
+        `Run the "${phase.name}" phase? (Skip to continue without it)`,
+      );
+    } catch {
+      return; // context went stale mid-prompt — abandon this chain silently
+    }
+    if (!alive()) return;
     if (!run) {
       const skipped = advancePhase(state, phase.id, { status: "skipped", summary: "Skipped by user" }, workflow.phases.length);
       saveState(pi, skipped);
@@ -47,14 +121,19 @@ export async function executeCurrentPhase(
     }
   }
 
-  ctx.ui.setStatus("gstack", `${workflow.name}: ${phase.name} (${state.phaseIndex + 1}/${workflow.phases.length})`);
+  try {
+    ctx.ui.setStatus("gstack", `${workflow.name}: ${phase.name} (${state.phaseIndex + 1}/${workflow.phases.length})`);
+  } catch {
+    /* stale ctx */
+  }
 
   // Deterministic mode: the executor spawns subagents itself for subagent
   // phases. Delegation no longer depends on the model choosing to call the
   // `subagent` tool — it happens by construction.
   let delegationPrefix = "";
   if (deterministicSubagents() && phase.execution === "subagent") {
-    const results = await runDeterministicDelegation(phase, wfCtx, ctx);
+    const results = await runDeterministicDelegation(phase, wfCtx, ctx, alive);
+    if (!alive()) return;
     delegationPrefix = formatDelegationResults(phase.id, results);
   }
 
@@ -73,21 +152,32 @@ export async function executeCurrentPhase(
   // throws "Agent is already processing. Specify streamingBehavior..." and the
   // phase instructions are silently lost. "followUp" queues them as a fresh
   // message after the current turn completes — the correct handoff semantic.
-  pi.sendUserMessage(delegationPrefix + instructions, { deliverAs: "followUp" });
+  try {
+    pi.sendUserMessage(delegationPrefix + instructions, { deliverAs: "followUp" });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/stale/i.test(msg)) notify(`gstack: failed to deliver phase instructions: ${msg}`, "error");
+  }
 }
 
 async function runDeterministicDelegation(
   phase: { id: string },
   wfCtx: WorkflowContext,
   ctx: ExtensionContext,
+  alive: () => boolean,
 ): Promise<Array<{ agent: string; result: SpawnResult }>> {
   const plan = buildDeterministicPlan(phase as any, wfCtx);
   const out: Array<{ agent: string; result: SpawnResult }> = [];
   let previous = "";
   for (const step of plan) {
+    if (!alive()) break; // session reloaded mid-chain — stop spawning work
     const task = step.task.replace(/\{previous\}/g, previous || "(no prior output)");
-    ctx.ui.notify(`gstack: running subagent "${step.agent}"…`, "info");
-    const result = await runSubagent({ agent: step.agent, task, cwd: wfCtx.cwd });
+    try {
+      ctx.ui.notify(`gstack: running subagent "${step.agent}"…`, "info");
+    } catch {
+      /* stale ctx — keep working, notifications are best-effort */
+    }
+    const result = await runSubagent({ agent: step.agent, task, cwd: wfCtx.cwd, shouldAbort: () => !alive() });
     out.push({ agent: step.agent, result });
     previous = result.output || result.error || "";
   }

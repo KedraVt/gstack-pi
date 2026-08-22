@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { getAllWorkflows, getWorkflow, getWorkflowIds } from "./workflows.ts";
 import { loadActiveState, createState, saveState, abortState, resumeState, approveNext } from "./state.ts";
 import { detectGitContext } from "./git.ts";
-import { executeCurrentPhase } from "./executor.ts";
+import { launchPhase } from "./executor.ts";
 import type { GitContext } from "./types.ts";
 
 export function getCompletions(prefix: string) {
@@ -33,7 +33,7 @@ export async function handleGstackCommand(args: string, ctx: ExtensionCommandCon
     const approved = approveNext(activeState);
     saveState(pi, approved);
     ctx.ui.notify("Approved — continuing workflow.", "info");
-    await executeCurrentPhase(pi, ctx, approved);
+    launchPhase(pi, ctx, approved);
     return;
   }
 
@@ -55,7 +55,7 @@ export async function handleGstackCommand(args: string, ctx: ExtensionCommandCon
       if (choice?.startsWith("Approve")) {
         const approved = approveNext(activeState);
         saveState(pi, approved);
-        await executeCurrentPhase(pi, ctx, approved);
+        launchPhase(pi, ctx, approved);
       } else if (choice === "Abort workflow") {
         const confirmed = await ctx.ui.confirm("Abort workflow?", `Stop "${activeState.workflowId}"?`);
         if (confirmed) {
@@ -78,7 +78,7 @@ export async function handleGstackCommand(args: string, ctx: ExtensionCommandCon
     if (choice.startsWith("Resume")) {
       const resumed = resumeState(activeState);
       saveState(pi, resumed);
-      await executeCurrentPhase(pi, ctx, resumed);
+      launchPhase(pi, ctx, resumed);
       return;
     }
 
@@ -124,7 +124,7 @@ async function startWorkflow(workflowId: string, ctx: ExtensionCommandContext, p
   saveState(pi, state);
 
   ctx.ui.notify(`Starting: ${workflow.name} (${workflow.phases.length} phases)`, "info");
-  await executeCurrentPhase(pi, ctx, state);
+  launchPhase(pi, ctx, state);
 }
 
 function menuScore(w: { id: string }, git: GitContext): number {

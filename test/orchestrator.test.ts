@@ -6,6 +6,48 @@ import { getAllWorkflows, getWorkflow, getWorkflowIds } from "../orchestrator/wo
 import { loadSkillDigest, getSkillInfo, buildSkillIndex, getSkillIds } from "../orchestrator/skills.ts";
 import { buildPhaseInstructions, buildDeterministicPlan, planFilePath } from "../orchestrator/templates.ts";
 import type { WorkflowContext, WorkflowPhase } from "../orchestrator/types.ts";
+import { launchPhase, ctxAlive } from "../orchestrator/executor.ts";
+
+// --- Runtime liveness guards (session reload crash fix) -------------------
+
+test("ctxAlive returns true for a healthy context", () => {
+  const ctx = { ui: { notify() {} } };
+  assert.equal(ctxAlive(ctx), true);
+});
+
+test("ctxAlive returns false when the context is stale (ui getter throws)", () => {
+  const stale = {
+    get ui() {
+      throw new Error("This extension ctx is stale after session replacement or reload.");
+    },
+  };
+  assert.equal(ctxAlive(stale), false);
+});
+
+test("launchPhase swallows stale-context rejections without throwing", async () => {
+  const pi = {} as any;
+  const ctx = { ui: { notify() { throw new Error("stale"); } } } as any;
+  let called = false;
+  // Must not throw synchronously nor produce an unhandled rejection.
+  launchPhase(pi, ctx, {} as any, async () => {
+    called = true;
+    throw new Error("Extension ctx is stale after session replacement or reload.");
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(called, true);
+});
+
+test("launchPhase reports non-stale errors best-effort", async () => {
+  const seen: Array<{ msg: string; level: string }> = [];
+  const pi = {} as any;
+  const ctx = { ui: { notify(msg: string, level: string) { seen.push({ msg, level }); } } } as any;
+  launchPhase(pi, ctx, {} as any, async () => {
+    throw new Error("boom during phase");
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(seen.length, 1);
+  assert.ok(seen[0].msg.includes("boom during phase"));
+});
 
 function makeCtx(workflowId: string, phaseIndex = 0, skillsDelivered: string[] = []): WorkflowContext {
   return {

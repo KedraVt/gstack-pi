@@ -4,10 +4,22 @@ import { handleGstackCommand, getCompletions } from "./command.ts";
 import { createInputRouter } from "./router.ts";
 import { loadActiveState, saveState, advancePhase, gateForApproval, createState } from "./state.ts";
 import { getWorkflow, getWorkflowIds } from "./workflows.ts";
-import { executeCurrentPhase } from "./executor.ts";
+import { launchPhase, invalidateRuntime } from "./executor.ts";
 import { manualGates } from "./config.ts";
 
 export function initOrchestrator(pi: ExtensionAPI): void {
+  // Invalidate all in-flight background chains when the session is replaced,
+  // reloaded or forked. Without this, a subagent chain started before the
+  // reload keeps running against a stale ExtensionContext and any ctx.ui
+  // access throws "Extension ctx is stale" — which, uncaught, kills pi.
+  for (const ev of ["session_shutdown", "session_before_switch", "session_before_fork"] as const) {
+    try {
+      (pi as any).on(ev, () => invalidateRuntime());
+    } catch {
+      /* event not supported by this pi version */
+    }
+  }
+
   pi.registerCommand("gstack", {
     description: "Guided workflow orchestrator: develop, investigate, qa, ship, review (next: approve gated phase)",
     getArgumentCompletions: getCompletions,
@@ -97,7 +109,10 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       }
 
       const nextPhase = workflow.phases[newState.phaseIndex];
-      executeCurrentPhase(pi, ctx, newState);
+      // Fire-and-forget: the chain (possibly including long subagent runs)
+      // must not block this tool result, and its errors must never surface as
+      // uncaught rejections. See executor.launchPhase.
+      launchPhase(pi, ctx, newState);
 
       return {
         content: [{
@@ -115,10 +130,10 @@ export function initOrchestrator(pi: ExtensionAPI): void {
     name: "gstack_start",
     label: "Start Workflow",
     description:
-      "Start a gstack guided workflow programmatically. Workflows: develop, investigate, qa, qa-report, ship, review,develop \\| investigate \\| qa \\| qa-report \\| ship \\| review \\| quick. Use when a task matches one of these pipelines and no workflow is currently active.",
-    promptSnippet: "Start a gstack workflow (develop, investigate, qa, ship, review,develop \\| investigate \\| qa \\| qa-report \\| ship \\| review \\| quick)",
+      "Start a gstack guided workflow programmatically. Workflows: develop | investigate | qa | qa-report | ship | review | quick. Use when a task matches one of these pipelines and no workflow is currently active.",
+    promptSnippet: "Start a gstack workflow (develop, investigate, qa, qa-report, ship, review, quick)",
     parameters: Type.Object({
-      workflow: Type.String({ description: "Workflow id: develop | investigate | qa | ship | review |develop \\| investigate \\| qa \\| qa-report \\| ship \\| review \\| quick" }),
+      workflow: Type.String({ description: "Workflow id: develop | investigate | qa | qa-report | ship | review | quick" }),
       goal: Type.String({ description: "What the workflow should accomplish" }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
@@ -145,11 +160,13 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       const state = createState(workflow.id, params.goal);
       saveState(pi, state);
       ctx.ui.notify(`gstack: starting ${workflow.name} (${workflow.phases.length} phases)`, "info");
-      await executeCurrentPhase(pi, ctx, state);
+      // Non-blocking: phase instructions arrive as a follow-up message once
+      // any deterministic subagent work for the first phase has completed.
+      launchPhase(pi, ctx, state);
       return {
         content: [{
           type: "text" as const,
-          text: `Started workflow "${workflow.id}" (${workflow.phases.length} phases). Follow the phase instructions that were just sent.`,
+          text: `Started workflow "${workflow.id}" (${workflow.phases.length} phases). The first phase instructions will arrive shortly.`,
         }],
       };
     },
