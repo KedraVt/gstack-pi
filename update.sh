@@ -127,6 +127,26 @@ for skill in "${SKILLS[@]}"; do
   fi
 done
 
+# 8b. Digest drift check: warn when an upstream SKILL.md is newer than its distilled digest
+echo "==> Checking digest freshness..."
+STALE=""
+for skill in "${SKILLS[@]}"; do
+  digest="$DEST/skills-distilled/$skill.md"
+  [ -f "$digest" ] || continue
+  upstream="$DEST/skills/$skill/SKILL.md"
+  [ -f "$upstream" ] || continue
+  if [ "$upstream" -nt "$digest" ]; then
+    STALE="$STALE\n  $skill (upstream SKILL.md changed after distillation)"
+  fi
+done
+if [ -n "$STALE" ]; then
+  echo ""
+  echo "  WARNING: these distilled digests may be stale:"
+  echo -e "$STALE"
+  echo "  Review skills-distilled/ and refresh the affected digests."
+  echo ""
+fi
+
 # 9. Verify
 echo "==> Verifying..."
 BINARY="$DEST/runtime/browse/dist/browse.exe"
@@ -135,6 +155,16 @@ if [ -x "$BINARY" ]; then
   echo "OK: binary at $BINARY"
 else
   echo "WARNING: binary not executable at $BINARY"
+fi
+
+# 10. Run tests (digest size caps, workflow integrity, tiering)
+if command -v bun >/dev/null 2>&1; then
+  echo "==> Running tests..."
+  if (cd "$DEST" && bun test test/orchestrator.test.ts >/dev/null 2>&1); then
+    echo "OK: tests pass"
+  else
+    echo "WARNING: tests failed — check bun test test/orchestrator.test.ts"
+  fi
 fi
 
 echo ""
