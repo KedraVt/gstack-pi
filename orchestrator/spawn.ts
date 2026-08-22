@@ -272,7 +272,8 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
         stderr += data.toString();
       });
 
-      const timeoutMs = req.timeoutMs ?? defaultTimeoutMs();`n      const timer = setTimeout(() => {
+      const timeoutMs = req.timeoutMs ?? defaultTimeoutMs();
+      const timer = setTimeout(() => {
         timedOut = true;
         try {
           proc.kill("SIGTERM");
