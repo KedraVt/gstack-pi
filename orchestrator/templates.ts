@@ -1,5 +1,7 @@
 import type { WorkflowPhase, WorkflowContext, Workflow } from "./types.ts";
 import { getWorkflow } from "./workflows.ts";
+import { loadSkillDigest, getSkillInfo } from "./skills.ts";
+import { skillsEnabled, manualGates } from "./config.ts";
 
 export function buildPhaseInstructions(phase: WorkflowPhase, ctx: WorkflowContext): string {
   const workflow = getWorkflow(ctx.state.workflowId);
@@ -27,10 +29,59 @@ export function buildPhaseInstructions(phase: WorkflowPhase, ctx: WorkflowContex
     parts.push(buildSubagentInstructions(phase, ctx));
   }
 
-  parts.push("");
-  parts.push("---");
-  parts.push("When this phase is complete, call the `gstack_advance` tool with a 2-3 sentence summary of what was accomplished and status \"completed\". If the phase failed, use status \"failed\" and explain why.");
+  const skillBlock = buildSkillBlock(phase);
+  if (skillBlock) {
+    parts.push("");
+    parts.push(skillBlock);
+  }
 
+  parts.push("");
+  parts.push(buildAdvancementRule(phase));
+
+  return parts.join("\n");
+}
+
+/**
+ * Advancement contract — one uniform rule so the model never improvises:
+ * always end the phase by calling gstack_advance yourself; never defer to the
+ * user. Whether the workflow continues automatically or pauses for approval
+ * after that call is decided by the orchestrator, not the model.
+ */
+function buildAdvancementRule(phase: WorkflowPhase): string {
+  const lines = [
+    "---",
+    "When this phase is complete, YOU call the `gstack_advance` tool with a 2-3 sentence summary of what was accomplished and status \"completed\". Never ask the user to run a command to continue — the workflow handles progression.",
+  ];
+  if (manualGates() && phase.advance === "manual") {
+    lines.push(
+      "This phase is a DECISION PHASE: after you call gstack_advance, the workflow will pause so the user can review your output before the next phase starts. Present your results clearly and completely — the user's approval depends on them.",
+    );
+  }
+  lines.push("If the phase failed, use status \"failed\" and explain why.");
+  return lines.join("\n");
+}
+
+/**
+ * Skill methodology injection. The orchestrator decides when skill knowledge
+ * applies and embeds the distilled digest directly — the agent does not need
+ * to know whether a skill should be loaded.
+ */
+function buildSkillBlock(phase: WorkflowPhase): string | null {
+  if (!skillsEnabled() || !phase.skill) return null;
+  const digest = loadSkillDigest(phase.skill);
+  const info = getSkillInfo(phase.skill);
+  const parts: string[] = ["### Skill methodology: " + phase.skill];
+  if (digest) {
+    parts.push(digest);
+  } else if (info) {
+    // Graceful degradation: digest missing → point at the full skill doc.
+    parts.push(`Read and follow the full methodology at: ${info.fullPath}`);
+  } else {
+    return null;
+  }
+  if (info) {
+    parts.push(`(Full skill documentation for deep consultation: ${info.fullPath})`);
+  }
   return parts.join("\n");
 }
 
@@ -174,7 +225,42 @@ function buildAgentTask(phase: WorkflowPhase, ctx: WorkflowContext): string {
     "regression-qa": `Run regression QA after a bug fix: {goal}.\n\nUse browser tools to test adjacent functionality. Verify the fix didn't break other flows. Report findings.`,
   };
 
-  return tasks[phase.id] ?? `Execute the "${phase.name}" phase for: {goal}. Use available tools and report results.`;
+  let task = tasks[phase.id] ?? `Execute the "${phase.name}" phase for: {goal}. Use available tools and report results.`;
+  const withSkill = withSkillDigest(phase, task);
+  return withSkill;
+}
+
+/**
+ * Prepend the distilled skill digest to a subagent task string. Subagent
+ * processes have isolated contexts — embedding the methodology in the task is
+ * the only reliable way for them to receive it.
+ */
+function withSkillDigest(phase: WorkflowPhase, task: string): string {
+  if (!skillsEnabled() || !phase.skill) return task;
+  const digest = loadSkillDigest(phase.skill);
+  const info = getSkillInfo(phase.skill);
+  if (digest) {
+    return `## Skill methodology: ${phase.skill} (follow this methodology; its output format is mandatory)\n\n${digest}\n\n---\n\n${task}`;
+  }
+  if (info) {
+    return `Before starting, read the file ${info.fullPath} and follow its methodology. Its output format is mandatory.\n\n${task}`;
+  }
+  return task;
+}
+
+/**
+ * Resolve the concrete subagent work for a phase: single agent or chain, with
+ * all {goal}/{branch}/{*_summary} placeholders and skill methodology already
+ * interpolated. Used by the deterministic executor to spawn subagents itself.
+ */
+export function buildDeterministicPlan(phase: WorkflowPhase, ctx: WorkflowContext): Array<{ agent: string; task: string }> {
+  if (phase.chain && phase.chain.length > 0) {
+    return phase.chain.map((step) => ({
+      agent: step.agent,
+      task: interpolate(step.task, ctx),
+    }));
+  }
+  return [{ agent: phase.agent ?? "worker", task: interpolate(buildAgentTask(phase, ctx), ctx) }];
 }
 
 function interpolate(template: string, ctx: WorkflowContext): string {

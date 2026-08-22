@@ -6,6 +6,14 @@ export interface WorkflowPhase {
   chain?: Array<{ agent: string; task: string }>;
   optional: boolean;
   skipWhen?: (ctx: WorkflowContext) => boolean;
+  /** Distilled skill digest injected by the orchestrator (id from skills registry). */
+  skill?: string;
+  /**
+   * Advancement policy. "auto" (default): the workflow proceeds as soon as the
+   * phase completes via gstack_advance. "manual": after completion the
+   * workflow enters awaiting_approval and only `/gstack next` moves it on.
+   */
+  advance?: "auto" | "manual";
 }
 
 export interface IntentPattern {
@@ -29,7 +37,7 @@ export interface PhaseResult {
 export interface WorkflowState {
   workflowId: string;
   phaseIndex: number;
-  status: "active" | "paused" | "completed" | "aborted";
+  status: "active" | "paused" | "completed" | "aborted" | "awaiting_approval";
   goal: string;
   results: Record<string, PhaseResult>;
 }

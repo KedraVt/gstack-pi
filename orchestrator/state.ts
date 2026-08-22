@@ -13,7 +13,10 @@ export function loadActiveState(ctx: ExtensionContext): WorkflowState | null {
     const entry = entries[i] as any;
     if (entry.type === "custom" && entry.customType === ENTRY_TYPE) {
       const state = entry.data as WorkflowState;
-      if (state && (state.status === "active" || state.status === "paused")) {
+      if (
+        state &&
+        (state.status === "active" || state.status === "paused" || state.status === "awaiting_approval")
+      ) {
         return state;
       }
       return null;
@@ -48,9 +51,27 @@ export function advancePhase(state: WorkflowState, phaseId: string, result: Phas
     next.status = "completed";
   } else {
     next.phaseIndex = nextIndex;
+    // Caller decides whether the next phase starts immediately ("active") or
+    // waits for user approval ("awaiting_approval") — see gateForApproval().
   }
 
   return next;
+}
+
+/**
+ * When the just-completed phase is a manual-gate phase, park the workflow in
+ * awaiting_approval. The phaseIndex already points at the next phase so
+ * approval (/gstack next) simply resumes execution.
+ */
+export function gateForApproval(state: WorkflowState): WorkflowState {
+  if (state.status !== "active") return state;
+  return { ...state, status: "awaiting_approval" };
+}
+
+/** Approve a gated workflow: resume normal execution at the pending phase. */
+export function approveNext(state: WorkflowState): WorkflowState {
+  if (state.status !== "awaiting_approval") return state;
+  return { ...state, status: "active" };
 }
 
 export function pauseState(state: WorkflowState): WorkflowState {

@@ -25,6 +25,8 @@ const develop: Workflow = {
         { agent: "planner", task: "Create a detailed implementation plan for: {goal}. Use this codebase context: {previous}. Output: files to modify, new files, data flow, risks, and test strategy." },
       ],
       optional: false,
+      // Decision phase: the user reviews the plan before any code is written.
+      advance: "manual",
     },
     {
       id: "implement",
@@ -39,6 +41,7 @@ const develop: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: true,
+      skill: "gstack-qa",
     },
     {
       id: "review",
@@ -46,6 +49,7 @@ const develop: Workflow = {
       execution: "subagent",
       agent: "reviewer",
       optional: false,
+      skill: "gstack-review",
     },
     {
       id: "ship",
@@ -53,6 +57,7 @@ const develop: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: true,
+      skill: "gstack-ship",
     },
   ],
 };
@@ -73,6 +78,7 @@ const investigate: Workflow = {
       name: "Reproduce the Bug",
       execution: "main",
       optional: false,
+      skill: "gstack-investigate",
     },
     {
       id: "root-cause",
@@ -83,6 +89,9 @@ const investigate: Workflow = {
         { agent: "planner", task: "Given this investigation context, identify the root cause and propose a minimal fix strategy: {previous}. Output: root cause, fix approach, files to change, regression risks." },
       ],
       optional: false,
+      skill: "gstack-investigate",
+      // Decision phase: the user approves the diagnosis before any fix is applied.
+      advance: "manual",
     },
     {
       id: "fix",
@@ -90,12 +99,14 @@ const investigate: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: false,
+      skill: "gstack-investigate",
     },
     {
       id: "verify",
       name: "Verify Fix",
       execution: "main",
       optional: false,
+      skill: "gstack-investigate",
     },
     {
       id: "regression-qa",
@@ -104,6 +115,7 @@ const investigate: Workflow = {
       agent: "worker",
       optional: true,
       skipWhen: (ctx) => !ctx.git.hasUncommittedChanges,
+      skill: "gstack-qa",
     },
   ],
 };
@@ -123,6 +135,7 @@ const qa: Workflow = {
       name: "Setup & Scope",
       execution: "main",
       optional: false,
+      skill: "gstack-qa",
     },
     {
       id: "test",
@@ -130,12 +143,14 @@ const qa: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: false,
+      skill: "gstack-qa",
     },
     {
       id: "report",
       name: "Bug Report",
       execution: "main",
       optional: false,
+      skill: "gstack-qa",
     },
     {
       id: "fix",
@@ -143,6 +158,7 @@ const qa: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: true,
+      skill: "gstack-qa",
     },
   ],
 };
@@ -162,6 +178,7 @@ const ship: Workflow = {
       name: "Pre-flight Checks",
       execution: "main",
       optional: false,
+      skill: "gstack-ship",
     },
     {
       id: "review",
@@ -169,6 +186,7 @@ const ship: Workflow = {
       execution: "subagent",
       agent: "reviewer",
       optional: false,
+      skill: "gstack-review",
     },
     {
       id: "test",
@@ -176,6 +194,7 @@ const ship: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: false,
+      skill: "gstack-ship",
     },
     {
       id: "push-pr",
@@ -183,12 +202,14 @@ const ship: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: false,
+      skill: "gstack-ship",
     },
     {
       id: "verify",
       name: "Verify CI",
       execution: "main",
       optional: false,
+      skill: "gstack-ship",
     },
   ],
 };
@@ -214,6 +235,7 @@ const review: Workflow = {
       name: "Findings & Suggestions",
       execution: "main",
       optional: false,
+      skill: "gstack-review",
     },
     {
       id: "fix",
@@ -221,6 +243,7 @@ const review: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: true,
+      skill: "gstack-review",
     },
   ],
 };

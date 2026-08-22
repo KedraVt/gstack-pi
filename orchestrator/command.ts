@@ -1,25 +1,74 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getAllWorkflows, getWorkflow, getWorkflowIds } from "./workflows.ts";
-import { loadActiveState, createState, saveState, abortState, resumeState } from "./state.ts";
+import { loadActiveState, createState, saveState, abortState, resumeState, approveNext } from "./state.ts";
 import { detectGitContext } from "./git.ts";
 import { executeCurrentPhase } from "./executor.ts";
 import type { GitContext } from "./types.ts";
 
 export function getCompletions(prefix: string) {
-  return getAllWorkflows()
+  const verbs = ["next"].map((v) => ({ label: v, detail: "Approve the gated phase and continue" }));
+  const wf = getAllWorkflows()
     .filter((w) => w.id.startsWith(prefix.toLowerCase()))
     .map((w) => ({ label: w.id, detail: w.description }));
+  return [...wf, ...verbs];
 }
 
 export async function handleGstackCommand(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
-  const git = await detectGitContext(ctx.cwd, pi);
+  const argId = args.trim().toLowerCase();
+
   const activeState = loadActiveState(ctx);
+
+  // /gstack next — approve a gated (awaiting_approval) workflow and continue.
+  if (argId === "next") {
+    if (!activeState) {
+      ctx.ui.notify("No active workflow to advance.", "warning");
+      return;
+    }
+    if (activeState.status !== "awaiting_approval") {
+      const wf = getWorkflow(activeState.workflowId);
+      const phaseName = wf?.phases[activeState.phaseIndex]?.name ?? "unknown";
+      ctx.ui.notify(`Workflow is not waiting for approval (currently: ${activeState.status}, phase "${phaseName}").`, "warning");
+      return;
+    }
+    const approved = approveNext(activeState);
+    saveState(pi, approved);
+    ctx.ui.notify("Approved — continuing workflow.", "info");
+    await executeCurrentPhase(pi, ctx, approved);
+    return;
+  }
+
+  const git = await detectGitContext(ctx.cwd, pi);
 
   if (activeState) {
     const workflow = getWorkflow(activeState.workflowId);
     const phaseName = workflow?.phases[activeState.phaseIndex]?.name ?? "unknown";
+    const progress = `(${activeState.phaseIndex + 1}/${workflow?.phases.length ?? 0})`;
+
+    if (activeState.status === "awaiting_approval") {
+      const choice = await ctx.ui.select(
+        "Workflow awaiting your approval",
+        [
+          `Approve & continue: ${activeState.workflowId} → next phase after "${activeState.results && Object.keys(activeState.results).pop()}" ${progress}`,
+          "Abort workflow",
+        ],
+      );
+      if (choice?.startsWith("Approve")) {
+        const approved = approveNext(activeState);
+        saveState(pi, approved);
+        await executeCurrentPhase(pi, ctx, approved);
+      } else if (choice === "Abort workflow") {
+        const confirmed = await ctx.ui.confirm("Abort workflow?", `Stop "${activeState.workflowId}"?`);
+        if (confirmed) {
+          saveState(pi, abortState(activeState));
+          ctx.ui.setStatus("gstack", undefined);
+          ctx.ui.notify("Workflow aborted.", "info");
+        }
+      }
+      return;
+    }
+
     const choice = await ctx.ui.select("Workflow in progress", [
-      `Resume: ${activeState.workflowId} → ${phaseName} (${activeState.phaseIndex + 1}/${workflow?.phases.length ?? 0})`,
+      `Resume: ${activeState.workflowId} → ${phaseName} ${progress}`,
       "Abort workflow",
       "Start new workflow",
     ]);
@@ -44,7 +93,6 @@ export async function handleGstackCommand(args: string, ctx: ExtensionCommandCon
     }
   }
 
-  const argId = args.trim().toLowerCase();
   if (argId) {
     const workflow = getWorkflow(argId);
     if (workflow) {

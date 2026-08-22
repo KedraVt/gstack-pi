@@ -1,7 +1,27 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { createState, advancePhase, abortState, resumeState, pauseState } from "../orchestrator/state.ts";
+import { existsSync } from "node:fs";
+import { createState, advancePhase, abortState, resumeState, pauseState, gateForApproval, approveNext } from "../orchestrator/state.ts";
 import { getAllWorkflows, getWorkflow, getWorkflowIds } from "../orchestrator/workflows.ts";
+import { loadSkillDigest, getSkillInfo, buildSkillIndex } from "../orchestrator/skills.ts";
+import { buildPhaseInstructions, buildDeterministicPlan } from "../orchestrator/templates.ts";
+import type { WorkflowContext } from "../orchestrator/types.ts";
+
+function makeCtx(workflowId: string, phaseIndex = 0): WorkflowContext {
+  return {
+    state: { workflowId, phaseIndex, status: "active", goal: "test goal", results: {} },
+    git: {
+      branch: "feature/test",
+      hasUncommittedChanges: true,
+      hasStagedChanges: false,
+      aheadOfRemote: 0,
+      behindRemote: 0,
+      isMainBranch: false,
+      recentCommitSubject: "test",
+    },
+    cwd: process.cwd(),
+  };
+}
 
 describe("state machine", () => {
   test("createState initializes correctly", () => {
@@ -95,6 +115,119 @@ describe("workflows registry", () => {
         }
       }
     }
+  });
+});
+
+describe("approval gates", () => {
+  test("gateForApproval parks an active workflow in awaiting_approval", () => {
+    const state = createState("develop", "add dark mode");
+    const next = advancePhase(state, "understand", { status: "completed", summary: "Understood" }, 6);
+    assert.equal(next.status, "active");
+    const gated = gateForApproval(next);
+    assert.equal(gated.status, "awaiting_approval");
+    assert.equal(gated.phaseIndex, next.phaseIndex);
+  });
+
+  test("approveNext resumes an awaiting workflow", () => {
+    const state = { ...createState("develop", "goal"), phaseIndex: 2, status: "awaiting_approval" as const };
+    const approved = approveNext(state);
+    assert.equal(approved.status, "active");
+    assert.equal(approved.phaseIndex, 2);
+  });
+
+  test("approveNext is a no-op for non-awaiting states", () => {
+    const state = createState("qa", "test site");
+    assert.equal(approveNext(state).status, "active");
+    assert.equal(gateForApproval({ ...state, status: "completed" }).status, "completed");
+  });
+
+  test("decision phases are marked manual", () => {
+    const developPlan = getWorkflow("develop")!.phases.find((p) => p.id === "plan")!;
+    assert.equal(developPlan.advance, "manual");
+    const rootCause = getWorkflow("investigate")!.phases.find((p) => p.id === "root-cause")!;
+    assert.equal(rootCause.advance, "manual");
+    // Non-decision phases stay auto.
+    for (const wf of getAllWorkflows()) {
+      for (const phase of wf.phases) {
+        if (!(wf.id === "develop" && phase.id === "plan") && !(wf.id === "investigate" && phase.id === "root-cause")) {
+          assert.notEqual(phase.advance, "manual", `${wf.id}/${phase.id} should not be a manual gate`);
+        }
+      }
+    }
+  });
+});
+
+describe("skill ingestion", () => {
+  test("all mapped skill digests exist and are small enough to inject", () => {
+    for (const wf of getAllWorkflows()) {
+      for (const phase of wf.phases) {
+        if (!phase.skill) continue;
+        const digest = loadSkillDigest(phase.skill);
+        assert.ok(digest, `missing digest for ${phase.skill} (${wf.id}/${phase.id})`);
+        assert.ok(digest.length < 16 * 1024, `digest ${phase.skill} too large: ${digest.length} chars`);
+        assert.ok(digest.includes("# Skill:"), `digest ${phase.skill} missing header`);
+      }
+    }
+  });
+
+  test("loadSkillDigest returns null for unknown or broken skills", () => {
+    assert.equal(loadSkillDigest("nonexistent-skill"), null);
+  });
+
+  test("getSkillInfo resolves full SKILL.md path that exists on disk", () => {
+    const info = getSkillInfo("gstack-review")!;
+    assert.ok(info);
+    assert.ok(existsSync(info.fullPath), `${info.fullPath} not found`);
+  });
+
+  test("phase instructions embed the digest for mapped phases", () => {
+    const wf = getWorkflow("review")!;
+    const findings = wf.phases.find((p) => p.id === "findings")!;
+    const instructions = buildPhaseInstructions(findings, makeCtx("review"));
+    assert.ok(instructions.includes("### Skill methodology: gstack-review"), "digest block missing");
+    assert.ok(instructions.includes("Scope drift"), "upstream methodology content missing");
+  });
+
+  test("phase instructions omit skill blocks when no skill is mapped", () => {
+    const wf = getWorkflow("quick")!;
+    const action = wf.phases.find((p) => p.id === "action")!;
+    const instructions = buildPhaseInstructions(action, makeCtx("quick"));
+    assert.ok(!instructions.includes("### Skill methodology"));
+  });
+
+  test("advancement rule forbids deferring progression to the user", () => {
+    const wf = getWorkflow("ship")!;
+    const preChecks = wf.phases[0];
+    const instructions = buildPhaseInstructions(preChecks, makeCtx("ship"));
+    assert.ok(instructions.includes("Never ask the user to run a command"));
+  });
+
+  test("manual-gate phases announce the approval pause in instructions", () => {
+    const wf = getWorkflow("develop")!;
+    const plan = wf.phases.find((p) => p.id === "plan")!;
+    const instructions = buildPhaseInstructions(plan, makeCtx("develop"));
+    assert.ok(instructions.includes("DECISION PHASE"), "manual gate not announced");
+  });
+});
+
+describe("deterministic delegation plan", () => {
+  test("single-agent phases resolve to one interpolated task with skill content", () => {
+    const wf = getWorkflow("develop")!;
+    const qa = wf.phases.find((p) => p.id === "qa")!;
+    const plan = buildDeterministicPlan(qa, makeCtx("develop"));
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].agent, "worker");
+    assert.ok(plan[0].task.includes("test goal"), "goal not interpolated");
+    assert.ok(plan[0].task.includes("Skill methodology: gstack-qa"), "skill digest not embedded in task");
+  });
+
+  test("chain phases resolve to sequential steps with agents preserved", () => {
+    const wf = getWorkflow("investigate")!;
+    const rootCause = wf.phases.find((p) => p.id === "root-cause")!;
+    const plan = buildDeterministicPlan(rootCause, makeCtx("investigate"));
+    assert.equal(plan.length, 2);
+    assert.deepEqual(plan.map((s) => s.agent), ["scout", "planner"]);
+    assert.ok(plan[0].task.includes("test goal"), "goal not interpolated in chain step");
   });
 });
 
