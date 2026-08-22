@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { createState, advancePhase, abortState, resumeState, pauseState, gateForApproval, approveNext } from "../orchestrator/state.ts";
 import { getAllWorkflows, getWorkflow, getWorkflowIds } from "../orchestrator/workflows.ts";
-import { loadSkillDigest, getSkillInfo, buildSkillIndex } from "../orchestrator/skills.ts";
-import { buildPhaseInstructions, buildDeterministicPlan } from "../orchestrator/templates.ts";
-import type { WorkflowContext } from "../orchestrator/types.ts";
+import { loadSkillDigest, getSkillInfo, buildSkillIndex, getSkillIds } from "../orchestrator/skills.ts";
+import { buildPhaseInstructions, buildDeterministicPlan, planFilePath } from "../orchestrator/templates.ts";
+import type { WorkflowContext, WorkflowPhase } from "../orchestrator/types.ts";
 
-function makeCtx(workflowId: string, phaseIndex = 0): WorkflowContext {
+function makeCtx(workflowId: string, phaseIndex = 0, skillsDelivered: string[] = []): WorkflowContext {
   return {
-    state: { workflowId, phaseIndex, status: "active", goal: "test goal", results: {} },
+    state: { workflowId, phaseIndex, status: "active", goal: "add dark mode toggle", results: {}, skillsDelivered },
     git: {
       branch: "feature/test",
       hasUncommittedChanges: true,
@@ -21,6 +21,12 @@ function makeCtx(workflowId: string, phaseIndex = 0): WorkflowContext {
     },
     cwd: process.cwd(),
   };
+}
+
+function findPhase(workflowId: string, phaseId: string): WorkflowPhase {
+  const phase = getWorkflow(workflowId)!.phases.find((p) => p.id === phaseId);
+  assert.ok(phase, `${workflowId}/${phaseId} not found`);
+  return phase;
 }
 
 describe("state machine", () => {
@@ -67,8 +73,8 @@ describe("state machine", () => {
 });
 
 describe("workflows registry", () => {
-  test("all 6 workflows registered", () => {
-    assert.equal(getAllWorkflows().length, 6);
+  test("all 7 workflows registered", () => {
+    assert.equal(getAllWorkflows().length, 7);
   });
 
   test("getWorkflow returns correct workflow", () => {
@@ -84,12 +90,9 @@ describe("workflows registry", () => {
 
   test("getWorkflowIds returns all ids", () => {
     const ids = getWorkflowIds();
-    assert.ok(ids.includes("develop"));
-    assert.ok(ids.includes("investigate"));
-    assert.ok(ids.includes("qa"));
-    assert.ok(ids.includes("ship"));
-    assert.ok(ids.includes("review"));
-    assert.ok(ids.includes("quick"));
+    for (const id of ["develop", "investigate", "qa", "qa-report", "ship", "review", "quick"]) {
+      assert.ok(ids.includes(id), `missing ${id}`);
+    }
   });
 
   test("all workflows have intents", () => {
@@ -158,78 +161,197 @@ describe("approval gates", () => {
 });
 
 describe("skill ingestion", () => {
-  test("all mapped skill digests exist and are small enough to inject", () => {
+  test("all registered skill digests exist and are small enough to inject", () => {
+    for (const id of getSkillIds()) {
+      const digest = loadSkillDigest(id);
+      assert.ok(digest, `missing digest for ${id}`);
+      assert.ok(digest.length < 16 * 1024, `digest ${id} too large: ${digest.length} chars`);
+      assert.ok(digest.includes("# Skill:"), `digest ${id} missing header`);
+    }
     for (const wf of getAllWorkflows()) {
       for (const phase of wf.phases) {
-        if (!phase.skill) continue;
-        const digest = loadSkillDigest(phase.skill);
-        assert.ok(digest, `missing digest for ${phase.skill} (${wf.id}/${phase.id})`);
-        assert.ok(digest.length < 16 * 1024, `digest ${phase.skill} too large: ${digest.length} chars`);
-        assert.ok(digest.includes("# Skill:"), `digest ${phase.skill} missing header`);
+        for (const id of phase.skills ?? []) {
+          const info = getSkillInfo(id);
+          assert.ok(info, `phase ${wf.id}/${phase.id} references unknown skill ${id}`);
+        }
       }
     }
   });
 
-  test("loadSkillDigest returns null for unknown or broken skills", () => {
+  test("loadSkillDigest returns null for unknown skills; grilling is vendored", () => {
     assert.equal(loadSkillDigest("nonexistent-skill"), null);
+    const grilling = getSkillInfo("grilling")!;
+    assert.equal(grilling.fullPath, null);
+    assert.ok(existsSync(grilling.distilledPath));
   });
 
-  test("getSkillInfo resolves full SKILL.md path that exists on disk", () => {
-    const info = getSkillInfo("gstack-review")!;
-    assert.ok(info);
-    assert.ok(existsSync(info.fullPath), `${info.fullPath} not found`);
+  test("getSkillInfo resolves full SKILL.md paths that exist on disk", () => {
+    for (const id of ["gstack-review", "gstack-office-hours", "gstack-document-generate"]) {
+      const info = getSkillInfo(id)!;
+      assert.ok(info.fullPath, `${id} should have an upstream SKILL.md`);
+      assert.ok(existsSync(info.fullPath), `${info.fullPath} not found`);
+    }
   });
 
-  test("phase instructions embed the digest for mapped phases", () => {
-    const wf = getWorkflow("review")!;
-    const findings = wf.phases.find((p) => p.id === "findings")!;
-    const instructions = buildPhaseInstructions(findings, makeCtx("review"));
-    assert.ok(instructions.includes("### Skill methodology: gstack-review"), "digest block missing");
-    assert.ok(instructions.includes("Scope drift"), "upstream methodology content missing");
+  test("every registered skill exposes a DoD + best-practices gate", () => {
+    for (const id of getSkillIds()) {
+      const info = getSkillInfo(id)!;
+      assert.ok(info.dod.includes("DoD:"), `${id} gate missing DoD`);
+      assert.ok(/BP:/.test(info.dod), `${id} gate missing best practices`);
+    }
+  });
+});
+
+describe("skill tiering in orchestrator instructions", () => {
+  test("MAIN phases embed full digests", () => {
+    const plan = findPhase("develop", "plan");
+    assert.equal(plan.execution, "main");
+    const instructions = buildPhaseInstructions(plan, makeCtx("develop", 2));
+    assert.ok(instructions.includes("# Skill: grilling"), "grilling protocol missing");
+    assert.ok(instructions.includes("frontier"), "interview protocol content missing");
+    assert.ok(instructions.includes("# Skill: gstack-plan-eng-review"), "eng rigor missing");
   });
 
-  test("phase instructions omit skill blocks when no skill is mapped", () => {
-    const wf = getWorkflow("quick")!;
-    const action = wf.phases.find((p) => p.id === "action")!;
+  test("SUBAGENT phases carry DoD gates only — full digests stay out of orchestrator context", () => {
+    const review = findPhase("ship", "review");
+    assert.equal(review.execution, "subagent");
+    const instructions = buildPhaseInstructions(review, makeCtx("ship"));
+    assert.ok(instructions.includes("Skill gate: gstack-review"));
+    assert.ok(instructions.includes("DoD: Scope Check line"));
+    assert.ok(!instructions.includes("# Skill: gstack-review"), "full digest leaked into orchestrator instructions");
+  });
+
+  test("repeat delivery degrades to the DoD gate even on main phases", () => {
+    const ctx = makeCtx("investigate", 3, ["gstack-investigate"]);
+    const verify = findPhase("investigate", "verify");
+    const instructions = buildPhaseInstructions(verify, ctx);
+    assert.ok(instructions.includes("Skill gate: gstack-investigate"));
+    assert.ok(!instructions.includes("# Skill: gstack-investigate"), "full digest re-delivered");
+  });
+
+  test("phases without skills get no skill blocks; advancement rule intact", () => {
+    const action = findPhase("quick", "action");
     const instructions = buildPhaseInstructions(action, makeCtx("quick"));
-    assert.ok(!instructions.includes("### Skill methodology"));
-  });
-
-  test("advancement rule forbids deferring progression to the user", () => {
-    const wf = getWorkflow("ship")!;
-    const preChecks = wf.phases[0];
-    const instructions = buildPhaseInstructions(preChecks, makeCtx("ship"));
+    assert.ok(!instructions.includes("Skill gate"));
     assert.ok(instructions.includes("Never ask the user to run a command"));
   });
 
-  test("manual-gate phases announce the approval pause in instructions", () => {
+  test("manual-gate phases announce the approval pause", () => {
+    const plan = findPhase("develop", "plan");
+    const instructions = buildPhaseInstructions(plan, makeCtx("develop", 2));
+    assert.ok(instructions.includes("DECISION PHASE"));
+  });
+});
+
+describe("plan cycle (interactive, hybrid)", () => {
+  test("develop has a dedicated scout explore phase right before planning", () => {
     const wf = getWorkflow("develop")!;
-    const plan = wf.phases.find((p) => p.id === "plan")!;
-    const instructions = buildPhaseInstructions(plan, makeCtx("develop"));
-    assert.ok(instructions.includes("DECISION PHASE"), "manual gate not announced");
+    const ids = wf.phases.map((p) => p.id);
+    const exploreIdx = ids.indexOf("explore");
+    assert.ok(exploreIdx >= 0 && ids[exploreIdx + 1] === "plan", `order wrong: ${ids.join(",")}`);
+    assert.equal(findPhase("develop", "explore").agent, "scout");
+  });
+
+  test("plan phase: rounds, recommended answers, question cap, plan-file write, no implement", () => {
+    const plan = findPhase("develop", "plan");
+    const instructions = buildPhaseInstructions(plan, makeCtx("develop", 2));
+    assert.ok(instructions.includes("recommended answer"));
+    assert.ok(instructions.includes("Maximum 5 questions"));
+    assert.ok(instructions.includes(".gstack/plans/"));
+    assert.ok(instructions.includes("Do NOT start implementing"));
+  });
+
+  test("implement worker reads the plan file, not a lossy summary", () => {
+    const implement = findPhase("develop", "implement");
+    const plan = buildDeterministicPlan(implement, makeCtx("develop", 3));
+    assert.equal(plan[0].agent, "worker");
+    assert.ok(plan[0].task.includes(".gstack/plans/add-dark-mode-toggle.md"), "plan file reference missing");
+    assert.ok(plan[0].task.includes("Read it FIRST"), "plan-first instruction missing");
+  });
+});
+
+describe("documentation phases", () => {
+  test("develop ends with an optional document phase carrying both doc skills", () => {
+    const doc = findPhase("develop", "document");
+    assert.equal(doc.optional, true);
+    assert.deepEqual(doc.skills, ["gstack-document-release", "gstack-document-generate"]);
+  });
+
+  test("ship carries an update-docs phase with both doc skills", () => {
+    const doc = findPhase("ship", "update-docs");
+    assert.equal(doc.optional, true);
+    assert.deepEqual(doc.skills, ["gstack-document-release", "gstack-document-generate"]);
+  });
+
+  test("document task chains generate pass and requires DOC REPORT + atomic docs commit", () => {
+    const doc = findPhase("develop", "document");
+    const plan = buildDeterministicPlan(doc, makeCtx("develop", 7));
+    assert.ok(plan[0].task.includes("Diataxis coverage map"));
+    assert.ok(plan[0].task.includes("DOC REPORT"));
+    assert.ok(plan[0].task.includes("docs: prefix"));
+  });
+
+  test("ship digest mandates TODOS.md management and git best practices", () => {
+    const digest = loadSkillDigest("gstack-ship")!;
+    assert.ok(digest.includes("TODOS.md management (mandatory)"));
+    assert.ok(digest.includes("Git best practices throughout"));
+  });
+});
+
+describe("qa report-only mode", () => {
+  test("qa-report workflow exists, all phases report-only", () => {
+    const wf = getWorkflow("qa-report")!;
+    assert.equal(wf.name, "QA Report (No Fixes)");
+    for (const phase of wf.phases) {
+      assert.equal(phase.variant, "report-only", `${wf.id}/${phase.id} not report-only`);
+    }
+  });
+
+  test("report-only directives appear in instructions and subagent tasks", () => {
+    const setup = findPhase("qa-report", "setup");
+    assert.ok(buildPhaseInstructions(setup, makeCtx("qa-report")).includes("REPORT-ONLY MODE"));
+
+    const testPhase = findPhase("qa-report", "test");
+    const plan = buildDeterministicPlan(testPhase, makeCtx("qa-report", 1));
+    assert.ok(plan[0].task.includes("REPORT-ONLY MODE"));
+    assert.ok(plan[0].task.includes("do NOT fix anything"));
+  });
+
+  test("normal qa workflow is NOT report-only", () => {
+    for (const phase of getWorkflow("qa")!.phases) {
+      assert.notEqual(phase.variant, "report-only");
+    }
   });
 });
 
 describe("deterministic delegation plan", () => {
   test("single-agent phases resolve to one interpolated task with skill content", () => {
-    const wf = getWorkflow("develop")!;
-    const qa = wf.phases.find((p) => p.id === "qa")!;
-    const plan = buildDeterministicPlan(qa, makeCtx("develop"));
+    const qa = findPhase("develop", "qa");
+    const plan = buildDeterministicPlan(qa, makeCtx("develop", 4));
     assert.equal(plan.length, 1);
     assert.equal(plan[0].agent, "worker");
-    assert.ok(plan[0].task.includes("test goal"), "goal not interpolated");
+    assert.ok(plan[0].task.includes("add dark mode toggle"), "goal not interpolated");
     assert.ok(plan[0].task.includes("Skill methodology: gstack-qa"), "skill digest not embedded in task");
   });
 
-  test("chain phases resolve to sequential steps with agents preserved", () => {
-    const wf = getWorkflow("investigate")!;
-    const rootCause = wf.phases.find((p) => p.id === "root-cause")!;
-    const plan = buildDeterministicPlan(rootCause, makeCtx("investigate"));
-    assert.equal(plan.length, 2);
+  test("chain steps also receive embedded skill methodology", () => {
+    const rootCause = findPhase("investigate", "root-cause");
+    assert.equal(rootCause.advance, "manual");
+    const plan = buildDeterministicPlan(rootCause, makeCtx("investigate", 1));
     assert.deepEqual(plan.map((s) => s.agent), ["scout", "planner"]);
-    assert.ok(plan[0].task.includes("test goal"), "goal not interpolated in chain step");
+    assert.ok(plan[0].task.includes("Skill methodology: gstack-investigate"), "digest not embedded in chain step");
+    assert.ok(plan[0].task.includes("add dark mode toggle"), "goal not interpolated in chain step");
+  });
+
+  test("explore phase delegates to the scout agent deterministically", () => {
+    const explore = findPhase("develop", "explore");
+    const plan = buildDeterministicPlan(explore, makeCtx("develop", 1));
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].agent, "scout");
+    assert.ok(plan[0].task.includes("Facts only"), "exploration discipline missing");
   });
 });
+
 
 describe("intent matching", () => {
   test("investigate matches debug keywords", () => {
