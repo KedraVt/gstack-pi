@@ -5,7 +5,8 @@ import { createInputRouter } from "./router.ts";
 import { loadActiveState, saveState, advancePhase, gateForApproval, createState } from "./state.ts";
 import { getWorkflow, getWorkflowIds } from "./workflows.ts";
 import { launchPhase, invalidateRuntime } from "./executor.ts";
-import { manualGates } from "./config.ts";
+import { manualGates, autoGateValidated } from "./config.ts";
+import { isValidatedStrategy } from "./skip.ts";
 import { ensureRun, writeRunReport } from "./telemetry.ts";
 
 export function initOrchestrator(pi: ExtensionAPI): void {
@@ -96,6 +97,20 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       // runs /gstack next. The model cannot bypass this — only /gstack next
       // resumes execution.
       if (manualGates() && phase.advance === "manual" && params.status === "completed") {
+        // STEP 4e (opt-in): a VALIDATED validate-only diagnosis may auto-advance.
+        if (autoGateValidated() && isValidatedStrategy(params.summary)) {
+          ctx.ui.notify(
+            `gstack: "${phase.name}" validated — auto-advancing to "${workflow.phases[newState.phaseIndex]?.name ?? "?"}" (GSTACK_PI_AUTO_GATE_VALIDATED).`,
+            "info",
+          );
+          launchPhase(pi, ctx, newState);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Phase "${phase.name}" recorded as VALIDATED. Auto-gate enabled: advancing to ${workflow.phases[newState.phaseIndex]?.name ?? "?"}.`,
+            }],
+          };
+        }
         const gated = gateForApproval(newState);
         saveState(pi, gated);
         const nextPhase = workflow.phases[gated.phaseIndex];

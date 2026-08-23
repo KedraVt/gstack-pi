@@ -3,6 +3,8 @@ import { getWorkflow } from "./workflows.ts";
 import { loadSkillDigest, getSkillInfo, type SkillInfo } from "./skills.ts";
 import { skillsEnabled, manualGates, deterministicSubagents } from "./config.ts";
 import { replaceExact } from "./text.ts";
+import { extractHandoff } from "./handoff.ts";
+import { parseRootCauseMarker, validateStrategyTask } from "./skip.ts";
 
 /** Deterministic slug for the plan file written by the interactive planning phase. */
 export function planFileSlug(goal: string): string {
@@ -86,6 +88,9 @@ function buildAdvancementRule(phase: WorkflowPhase): string {
   const lines = [
     "---",
     "When this phase is complete, YOU call the `gstack_advance` tool with a 2-3 sentence summary of what was accomplished and status \"completed\". Never ask the user to run a command to continue — the workflow handles progression.",
+    // STEP 4a (COR-01): the marker must survive into the SUMMARY — skip.ts
+    // reads results[phase].summary, not the report body.
+    "If your report ends with a `CONFIRMED ROOT CAUSE:` line, you MUST include that exact line verbatim in your gstack_advance summary.",
   ];
   if (manualGates() && phase.advance === "manual") {
     lines.push(
@@ -240,6 +245,8 @@ function buildMainInstructions(phase: WorkflowPhase, ctx: WorkflowContext): stri
       `3. Attempt reproduction (run tests, start dev server, or use browser tools)`,
       `4. Document: exact steps to reproduce, expected vs actual behavior`,
       `5. If you cannot reproduce, state what you tried and what's needed`,
+      "",
+      "If your report ends with a `CONFIRMED ROOT CAUSE:` line, you MUST include that exact line verbatim in your gstack_advance summary.",
     ].join("\n"),
 
     "verify": (c) => [
@@ -422,7 +429,8 @@ Goal: {goal} | Branch: {branch}
 Prior findings:
 {findings_summary}
 
-Apply minimal, targeted fixes. Run tests after each fix. Report what was fixed.`,
+Apply minimal, targeted fixes. Run tests after each fix. Report what was fixed.
+If your report ends with a \`CONFIRMED ROOT CAUSE:\` line, you MUST include that exact line verbatim in your gstack_advance summary.`,
     "test": `## DELIVERABLE
 Test commands identified + pass/fail counts + failure details.
 
@@ -580,6 +588,19 @@ export function scopeBoundaryFor(phaseId: string): string {
 }
 
 export function buildDeterministicPlan(phase: WorkflowPhase, ctx: WorkflowContext): Array<{ agent: string; task: string }> {
+  // STEP 4c: structural skip. If reproduction already CONFIRMED the root cause
+  // (marker inside a valid HANDOFF, all cited files existing), collapse the
+  // scout→planner chain to ONE validate-only planner step. The validate step
+  // is never skippable and the workflow never collapses directly to fix.
+  if (phase.id === "root-cause") {
+    const marker = parseRootCauseMarker(
+      extractHandoff(ctx.state.results["reproduce"]?.summary ?? "").text,
+      ctx.cwd,
+    );
+    if (marker) {
+      return [{ agent: "planner", task: interpolate(validateStrategyTask(marker), ctx) }];
+    }
+  }
   const boundary = scopeBoundaryFor(phase.id);
   const suffix = boundary ? `\n\n${boundary}` : "";
   if (phase.chain && phase.chain.length > 0) {

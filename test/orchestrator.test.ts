@@ -1,6 +1,6 @@
-import { test, describe } from "node:test";
+﻿import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -299,7 +299,7 @@ describe("skill tiering in orchestrator instructions", () => {
     assert.ok(instructions.includes("# Skill: gstack-plan-eng-review"), "eng rigor missing");
   });
 
-  test("SUBAGENT phases carry DoD gates only — full digests stay out of orchestrator context", () => {
+  test("SUBAGENT phases carry DoD gates only â€” full digests stay out of orchestrator context", () => {
     const review = findPhase("ship", "review");
     assert.equal(review.execution, "subagent");
     const instructions = buildPhaseInstructions(review, makeCtx("ship"));
@@ -353,7 +353,7 @@ describe("plan cycle (interactive, hybrid)", () => {
 test("reproduce phase tasks carry a reproduction-only scope boundary", () => {
   const wf = getWorkflow("investigate")!;
   const reproduce = wf.phases.find((p) => p.id === "reproduce")!;
-  // reproduce is a MAIN phase — its boundary must appear in buildPhaseInstructions
+  // reproduce is a MAIN phase â€” its boundary must appear in buildPhaseInstructions
   const instructions = buildPhaseInstructions(reproduce, makeCtx("investigate", 0));
   assert.ok(instructions.includes("SCOPE BOUNDARY"), "reproduction boundary missing from main-phase instructions");
   assert.ok(instructions.includes("do NOT"));
@@ -584,7 +584,7 @@ describe("run-report telemetry", () => {
 // --- STEP 1: deliverable-first contracts + language audit --------------------
 
 describe("deliverable-first contracts (STEP 1)", () => {
-  const ITALIAN_STOPLIST = ["fase", "trova", "leggi", "scrivi", "deve", "sempre", "perché", "delle", "degli", "questo"];
+  const ITALIAN_STOPLIST = ["fase", "trova", "leggi", "scrivi", "deve", "sempre", "perchÃ©", "delle", "degli", "questo"];
 
   function injectableStrings(): string[] {
     const out: string[] = [];
@@ -665,7 +665,7 @@ describe("deliverable-first contracts (STEP 1)", () => {
         );
       }
       assert.ok(
-        !/[àèéìòù]/i.test(s),
+        !/[Ã Ã¨Ã©Ã¬Ã²Ã¹]/i.test(s),
         `accented letter found in: ${s.slice(0, 140).replace(/\s+/g, " ")}...`,
       );
     }
@@ -839,6 +839,140 @@ describe("role-scoped skill injection (STEP 3)", () => {
         step.task.includes("Skill methodology: gstack-document-release") || step.task.includes("Skill methodology: gstack-document-generate"),
         "inherited phase skills lost",
       );
+    }
+  });
+});
+
+// --- STEP 4: structural skip with anti-spoofing guards -----------------------
+
+import {
+  parseRootCauseMarker,
+  validateStrategyTask,
+  allTestsPassed,
+  isValidatedStrategy,
+  isRefutedStrategy,
+} from "../orchestrator/skip.ts";
+import { autoGateValidated } from "../orchestrator/config.ts";
+
+const VALID_MARKER = 'CONFIRMED ROOT CAUSE: retry loop resets cache state | files: src/app.ts, src/cache.ts';
+const HANDOFF_PAYLOAD = "## HANDOFF\nVERIFIED FACTS:\n- cause confirmed @ src/app.ts:42\n" + VALID_MARKER;
+
+describe("root-cause marker parsing (STEP 4b)", () => {
+  test("parses a valid marker inside a HANDOFF with existing files", () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "gstack-skip-"));
+    try {
+      fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+      writeFileSync(path.join(tmp, "src", "app.ts"), "x");
+      writeFileSync(path.join(tmp, "src", "cache.ts"), "x");
+      const marker = parseRootCauseMarker(HANDOFF_PAYLOAD, tmp);
+      assert.ok(marker);
+      assert.equal(marker.cause, "retry loop resets cache state");
+      assert.deepEqual(marker.files, ["src/app.ts", "src/cache.ts"]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("marker outside HANDOFF yields null + warning", () => {
+    const warnings: string[] = [];
+    const text = "symptoms described here\n" + VALID_MARKER + "\n(no handoff section)" + "\n(no handoff section)";
+    assert.equal(parseRootCauseMarker(text, process.cwd(), (m) => warnings.push(m)), null);
+    assert.ok(warnings.some((w) => w.includes("[skip] root-cause marker outside HANDOFF ignored")));
+  });
+
+  test("nonexistent cited files yield null", () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "gstack-skip2-"));
+    try {
+      assert.equal(parseRootCauseMarker(HANDOFF_PAYLOAD, tmp), null);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("none / absent / malformed markers yield null", () => {
+    assert.equal(parseRootCauseMarker("## HANDOFF\nCONFIRMED ROOT CAUSE: none | files: none", process.cwd()), null);
+    assert.equal(parseRootCauseMarker("## HANDOFF\nno marker here", process.cwd()), null);
+    assert.equal(parseRootCauseMarker("## HANDOFF\nCONFIRMED ROOT CAUSE: broken marker without files", process.cwd()), null);
+  });
+
+  test("validateStrategyTask keeps the anti-spoofing contract", () => {
+    const task = validateStrategyTask({ cause: "cache reset loop", files: ["a.ts"] });
+    assert.ok(task.includes("## DELIVERABLE"));
+    assert.ok(task.includes("## STOP CONDITION"));
+    assert.ok(task.includes('"cache reset loop"'));
+    assert.ok(task.includes("REFUTED:"));
+  });
+});
+
+describe("conditional collapse (STEP 4c)", () => {
+  test("valid reproduce summary collapses the chain to ONE planner step", () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "gstack-collapse-"));
+    try {
+      fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+      writeFileSync(path.join(tmp, "src", "app.ts"), "x");
+      writeFileSync(path.join(tmp, "src", "cache.ts"), "x");
+      const ctx = makeCtx("investigate", 1);
+      ctx.cwd = tmp;
+      ctx.state.results["reproduce"] = { status: "completed", summary: "Reproduced reliably. " + HANDOFF_PAYLOAD };
+      const rootCause = findPhase("investigate", "root-cause");
+      const plan = buildDeterministicPlan(rootCause, ctx);
+      assert.equal(plan.length, 1);
+      assert.equal(plan[0].agent, "planner");
+      assert.ok(plan[0].task.includes("CONFIRMED this cause"));
+      assert.ok(!plan[0].task.toLowerCase().includes("scout"));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("without a valid marker the full scout-planner plan stays intact", () => {
+    const rootCause = findPhase("investigate", "root-cause");
+    const plan = buildDeterministicPlan(rootCause, makeCtx("investigate", 1));
+    assert.deepEqual(plan.map((s) => s.agent), ["scout", "planner"]);
+  });
+});
+
+describe("refutation + QA skip helpers (STEP 4d)", () => {
+  test("isValidated / isRefuted read the first meaningful line only", () => {
+    assert.equal(isValidatedStrategy("VALIDATED: off-by-one @ a.ts:12\nmore"), true);
+    assert.equal(isValidatedStrategy("the answer is VALIDATED:"), false);
+    assert.equal(isRefutedStrategy("REFUTED: files were already correct"), true);
+    assert.equal(isRefutedStrategy(""), false);
+  });
+
+  test("allTestsPassed is falsifiable and safe on malformed summaries", () => {
+    assert.equal(allTestsPassed("Ran the suite: 120 passed, 0 failures"), true);
+    assert.equal(allTestsPassed("All tests green after the fix"), true);
+    assert.equal(allTestsPassed("2 failures in checkout flow"), false);
+    assert.equal(allTestsPassed(undefined), false);
+    assert.equal(allTestsPassed("garbage summary"), false);
+  });
+
+  test("qa fix phase gains a test-based structural skipWhen", () => {
+    const qaFix = findPhase("qa", "fix");
+    assert.ok(qaFix.skipWhen, "qa/fix must declare skipWhen");
+    const passedCtx = makeCtx("qa", 3);
+    passedCtx.state.results["test"] = { status: "completed", summary: "suite run: 50 passed, 0 failures" };
+    assert.equal(qaFix.skipWhen!(passedCtx), true);
+    const failedCtx = makeCtx("qa", 3);
+    failedCtx.state.results["test"] = { status: "completed", summary: "3 failures found" };
+    assert.equal(qaFix.skipWhen!(failedCtx), false);
+  });
+});
+
+describe("auto-gate opt-in (STEP 4e)", () => {
+  test("GSTACK_PI_AUTO_GATE_VALIDATED defaults OFF and parses correctly", () => {
+    const original = process.env.GSTACK_PI_AUTO_GATE_VALIDATED;
+    try {
+      delete process.env.GSTACK_PI_AUTO_GATE_VALIDATED;
+      assert.equal(autoGateValidated(), false);
+      process.env.GSTACK_PI_AUTO_GATE_VALIDATED = "1";
+      assert.equal(autoGateValidated(), true);
+      process.env.GSTACK_PI_AUTO_GATE_VALIDATED = "off";
+      assert.equal(autoGateValidated(), false);
+    } finally {
+      if (original === undefined) delete process.env.GSTACK_PI_AUTO_GATE_VALIDATED;
+      else process.env.GSTACK_PI_AUTO_GATE_VALIDATED = original;
     }
   });
 });

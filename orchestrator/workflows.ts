@@ -1,4 +1,5 @@
 import type { Workflow } from "./types.ts";
+import { allTestsPassed } from "./skip.ts";
 
 const develop: Workflow = {
   id: "develop",
@@ -171,6 +172,9 @@ const qa: Workflow = {
       execution: "subagent",
       agent: "worker",
       optional: true,
+      // STEP 4d: when the "test" phase already reported all tests passed,
+      // the fix loop is structurally skipped (falsifiable, via skip.ts).
+      skipWhen: (ctx) => allTestsPassed(ctx.state.results["test"]?.summary),
       skills: ["gstack-qa"],
     },
   ],

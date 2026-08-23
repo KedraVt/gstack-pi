@@ -8,6 +8,7 @@ import { runSubagent, type SpawnRequest, type SpawnResult, defaultTimeoutMs } fr
 import { deterministicSubagents, skillsEnabled, optionalPhases } from "./config.ts";
 import { ensureRun, recordDelegatedStep, writeRunReport } from "./telemetry.ts";
 import { extractHandoff } from "./handoff.ts";
+import { isRefutedStrategy } from "./skip.ts";
 import { replaceExact } from "./text.ts";
 
 // --- Sequential-chain resilience (STEP 2f) -----------------------------------
@@ -207,6 +208,15 @@ export async function executeCurrentPhase(
       });
     }
     delegationPrefix = formatDelegationResults(phase.id, results);
+    // STEP 4d: make the skip outcome explicit in what the model reviews.
+    if (phase.id === "root-cause" && results.length > 0) {
+      const lastOutput = results[results.length - 1].result.output ?? "";
+      if (/^REFUTED:/im.test(lastOutput)) {
+        delegationPrefix += "\n\n[root-cause outcome: refuted→full-reinvestigation]";
+      } else if (/^VALIDATED:/im.test(lastOutput)) {
+        delegationPrefix += "\n\n[root-cause outcome: validated]";
+      }
+    }
     // Restore the phase status line (delegation left subagent progress there).
     try {
       ctx.ui.setStatus("gstack", `${workflow.name}: ${phase.name} (${state.phaseIndex + 1}/${workflow.phases.length})`);
@@ -245,69 +255,105 @@ async function runDeterministicDelegation(
   alive: () => boolean,
 ): Promise<Array<{ agent: string; result: SpawnResult }>> {
   const plan = buildDeterministicPlan(phase as any, wfCtx);
-  const out: Array<{ agent: string; result: SpawnResult }> = [];
-  let previous = "";
-  let prevIncomplete = false;
-  for (const [index, step] of plan.entries()) {
-    if (!alive()) break; // session reloaded mid-chain — stop spawning work
-    // STEP 2c: the receiver gets the extracted HANDOFF (computed on the RAW
-    // uncapped upstream output), never the entire report — a full 50K-char
-    // payload inflated every downstream turn's prefill and encouraged
-    // re-verification of already-settled facts.
-    const handoff = extractHandoff(previous, { incomplete: prevIncomplete });
-    const task = replaceExact(step.task, /\{previous\}/g, handoff.text || "(no prior output)");
+  // STEP 4d: a collapsed validate-only root-cause step may be REFUTED — then
+  // the FULL original scout→planner chain is rebuilt and re-run.
+  const wasCollapsed =
+    phase.id === "root-cause" && plan.length === 1 && plan[0].agent === "planner";
+
+  const runSteps = async (
+    steps: Array<{ agent: string; task: string }>,
+  ): Promise<Array<{ agent: string; result: SpawnResult }>> => {
+    const out: Array<{ agent: string; result: SpawnResult }> = [];
+    let previous = "";
+    let prevIncomplete = false;
+    for (const [index, step] of steps.entries()) {
+      if (!alive()) break; // session reloaded mid-chain — stop spawning work
+      // STEP 2c: the receiver gets the extracted HANDOFF (computed on the RAW
+      // uncapped upstream output), never the entire report — a full 50K-char
+      // payload inflated every downstream turn's prefill and encouraged
+      // re-verification of already-settled facts.
+      const handoff = extractHandoff(previous, { incomplete: prevIncomplete });
+      const task = replaceExact(step.task, /\{previous\}/g, handoff.text || "(no prior output)");
+      try {
+        ctx.ui.notify(`gstack: running subagent "${step.agent}"…`, "info");
+      } catch {
+        /* stale ctx — keep working, notifications are best-effort */
+      }
+
+      // Live progress in the status bar (deterministic spawns have no tool
+      // renderer, so the status line is the real-time view).
+      const stepStart = Date.now();
+      const setStatus = (extra: string) => {
+        try {
+          const secs = Math.round((Date.now() - stepStart) / 1000);
+          ctx.ui.setStatus(
+            "gstack",
+            `subagent ${step.agent} (${index + 1}/${steps.length}) · ${secs}s — ${extra}`,
+          );
+        } catch {
+          /* stale ctx */
+        }
+      };
+      setStatus("starting…");
+
+      const req: SpawnRequest = {
+        agent: step.agent,
+        task,
+        cwd: wfCtx.cwd,
+        shouldAbort: () => !alive(),
+        onActivity: setStatus,
+      };
+      // STEP 2f: at most one retry for transient failures, with a +50% timeout.
+      let result = await runSubagent(req);
+      const decision = retryDecision(result, 1);
+      if (decision.retry && alive()) {
+        try {
+          ctx.ui.notify(
+            `gstack: subagent "${step.agent}" failed transiently (${result.timedOut ? "timeout" : `exit ${result.exitCode}`}) — retrying once in 30s with a raised limit…`,
+            "warning",
+          );
+        } catch {
+          /* stale ctx */
+        }
+        await delay(RETRY_DELAY_MS);
+        if (alive()) {
+          result = await runSubagent({
+            ...req,
+            timeoutMs: Math.round((req.timeoutMs ?? defaultTimeoutMs()) * decision.timeoutScale),
+          });
+        }
+      }
+      out.push({ agent: step.agent, result });
+      previous = result.rawOutput ?? (result.output || result.error || "");
+      prevIncomplete = !result.ok || result.incomplete === true;
+    }
+    return out;
+  };
+
+  const out = await runSteps(plan);
+
+  // STEP 4d — mandatory reopen path: REFUTED validation → run the FULL
+  // original chain, prefixing the scout so it does not revisit the dead end.
+  if (wasCollapsed && out.length > 0 && isRefutedStrategy(out[out.length - 1].result.output ?? "")) {
     try {
-      ctx.ui.notify(`gstack: running subagent "${step.agent}"…`, "info");
+      ctx.ui.notify("gstack: root-cause hypothesis REFUTED by validation — rebuilding the full investigation chain.", "warning");
     } catch {
-      /* stale ctx — keep working, notifications are best-effort */
+      /* stale ctx */
     }
-
-    // Live progress in the status bar (deterministic spawns have no tool
-    // renderer, so the status line is the real-time view).
-    const stepStart = Date.now();
-    const setStatus = (extra: string) => {
-      try {
-        const secs = Math.round((Date.now() - stepStart) / 1000);
-        ctx.ui.setStatus(
-          "gstack",
-          `subagent ${step.agent} (${index + 1}/${plan.length}) · ${secs}s — ${extra}`,
-        );
-      } catch {
-        /* stale ctx */
-      }
+    const refutedText = out[out.length - 1].result.output ?? "";
+    const causeMatch = /CONFIRMED this cause: "(.+?)" \(files?:/.exec(plan[0].task);
+    const reasonMatch = /^REFUTED:\s*(.+)$/im.exec(refutedText);
+    const freshCtx: WorkflowContext = {
+      ...wfCtx,
+      state: { ...wfCtx.state, results: { ...wfCtx.state.results } },
     };
-    setStatus("starting…");
-
-    const req: SpawnRequest = {
-      agent: step.agent,
-      task,
-      cwd: wfCtx.cwd,
-      shouldAbort: () => !alive(),
-      onActivity: setStatus,
-    };
-    // STEP 2f: at most one retry for transient failures, with a +50% timeout.
-    let result = await runSubagent(req);
-    const decision = retryDecision(result, 1);
-    if (decision.retry && alive()) {
-      try {
-        ctx.ui.notify(
-          `gstack: subagent "${step.agent}" failed transiently (${result.timedOut ? "timeout" : `exit ${result.exitCode}`}) — retrying once in 30s with a raised limit…`,
-          "warning",
-        );
-      } catch {
-        /* stale ctx */
-      }
-      await delay(RETRY_DELAY_MS);
-      if (alive()) {
-        result = await runSubagent({
-          ...req,
-          timeoutMs: Math.round((req.timeoutMs ?? defaultTimeoutMs()) * decision.timeoutScale),
-        });
-      }
+    delete freshCtx.state.results["reproduce"];
+    const fullPlan = buildDeterministicPlan(phase as any, freshCtx);
+    if (fullPlan.length > 0 && causeMatch) {
+      const note = `NOTE: the hypothesis '${causeMatch[1]}' was REFUTED because: ${reasonMatch?.[1]?.trim() ?? "validation against the code failed"}. Do not revisit it.\n\n`;
+      fullPlan[0] = { ...fullPlan[0], task: replaceExact(fullPlan[0].task, /^/, note) };
+      return [...out, ...(await runSteps(fullPlan))];
     }
-    out.push({ agent: step.agent, result });
-    previous = result.rawOutput ?? (result.output || result.error || "");
-    prevIncomplete = !result.ok || result.incomplete === true;
   }
   return out;
 }

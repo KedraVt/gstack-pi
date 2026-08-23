@@ -38,3 +38,14 @@ export function optionalPhases(): OptionalPhasesMode {
   if (v === "auto" || v === "skip") return v;
   return "ask";
 }
+
+/**
+ * STEP 4e (COR-17): opt-in conditional gate. When ON and a validate-only
+ * root-cause step reports `VALIDATED:` as its first line, the workflow
+ * auto-advances past root-cause's manual approval gate. On REFUTED the gate
+ * always applies. Default OFF: the manual gate remains the only human control
+ * before code changes.
+ */
+export function autoGateValidated(): boolean {
+  return parse(process.env.GSTACK_PI_AUTO_GATE_VALIDATED) ?? false;
+}
