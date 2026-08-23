@@ -287,3 +287,73 @@ Deferred ideas live in `FUTURE_UPDATES.md`.
 ## License
 
 MIT
+
+---
+
+## Injection & efficiency
+
+The orchestrator controls WHAT is injected into subagent prompts and HOW chains are orchestrated. All protocols below apply in **deterministic mode** (`GSTACK_PI_DETERMINISTIC=on`, the default). With `GSTACK_PI_DETERMINISTIC=off`, tasks flow through the advisory `subagent`-tool path where `{previous}` stays literal and handoff extraction is never invoked (documented advisory divergence).
+
+### Task contracts (three paths)
+Every delegated task and every main-phase instruction carries a falsifiable pair of blocks in a fixed order:
+
+```text
+## DELIVERABLE      <- what must exist when the work is done (verifiable yes/no)
+## STOP CONDITION   <- "Stop when: <observable condition>. Further exploration is waste."
+## CONTEXT          <- goal, branch, prior-phase summaries, {previous}
+## METHODOLOGY      <- skill digests with a per-class prefix
+## OUTPUT CONTRACT  <- REPORT + structured HANDOFF requirement
+```
+
+The contracts cover all three injection paths: single-agent tasks (`buildAgentTask`), chain steps (inline in `workflows.ts`), and main-phase instructions (`buildMainInstructions`). A cross-cutting unit test fails if any workflow phase loses its contract.
+
+### HANDOFF protocol
+Chain steps no longer receive the entire upstream report. `extractHandoff()` (orchestrator/handoff.ts) computes what travels into `{previous}`, preferring the structured `## HANDOFF` section each specialist must emit (VERIFIED FACTS / DECISIONS / OPEN QUESTIONS / DO NOT REDO). Levels are visible in delegation summaries:
+
+| level | meaning |
+|---|---|
+| `full` | well-formed HANDOFF section, VERIFIED FACTS present, <= 4000 chars |
+| `partial` | HANDOFF section present but incomplete/malformed |
+| `raw` | small output (<= 6000 chars) passed whole |
+| `fallback` | tail cut of oversized output, or output from an incomplete run |
+
+Extraction runs on the RAW uncapped output (`SpawnResult.rawOutput`); the 50KB display cap only applies to what reaches orchestrator context.
+
+### Root-cause structural skip
+If the reproduce phase's summary contains a valid marker line inside its HANDOFF section:
+
+```text
+CONFIRMED ROOT CAUSE: <one-line cause> | files: <comma-separated file paths>
+```
+
+the root-cause scout->planner chain collapses to ONE validate-only planner step. Anti-spoofing guards (ALL mandatory, see skip.ts): (a) the marker only counts inside the `## HANDOFF` section, (b) every cited file must exist on disk relative to cwd, (c) the validate step itself is never skippable and the workflow never collapses directly to fix. A leading `REFUTED:` line rebuilds and re-runs the full original chain prefixed with an explicit NOTE. The QA fix phase is structurally skipped when the test phase falsifiably reports zero failures (`allTestsPassed`).
+
+### Per-class timeouts
+`GSTACK_PI_TIMEOUT_EXPLORE` (default 900s), `GSTACK_PI_TIMEOUT_WORK` (default 1500s), `GSTACK_PI_TIMEOUT_VERIFY` (default 900s); unknown ids fall back to `GSTACK_PI_SUBAGENT_TIMEOUT` (default 1200s). Values are seconds. Every registered phase id maps to exactly one class (`timeoutClassFor`), enforced by test.
+
+### Environment variables
+
+| variable | default | effect |
+|---|---|---|
+| `GSTACK_PI_SKILLS` | on | skill digest injection |
+| `GSTACK_PI_DETERMINISTIC` | on | executor-spawned subagents |
+| `GSTACK_PI_MANUAL_GATES` | on | approval pause after decision phases |
+| `GSTACK_PI_OPTIONAL_PHASES` | ask | `ask` \| `auto` \| `skip` handling of optional phases |
+| `GSTACK_PI_AUTO_GATE_VALIDATED` | off | auto-advance past root-cause gate when validation starts with `VALIDATED:` |
+| `GSTACK_PI_SUBAGENT_TIMEOUT` | 1200 | fallback timeout, seconds |
+| `GSTACK_PI_TIMEOUT_EXPLORE` / `_WORK` / `_VERIFY` | 900 / 1500 / 900 | per-class timeouts, seconds |
+| `GSTACK_PI_LIVENESS_SEC` | 240 | observe-only silence threshold, seconds; `off` disables |
+| `GSTACK_PI_MAX_RUN_TOKENS` | disabled | orderly chain stop after cumulative token usage exceeds it |
+
+Run reports land in `.gstack/runs/<ISO-timestamp>-<workflowId>.json` (per-step durations, tool calls, turns, token usage, handoff levels, incompleteness, timeout class, liveness observations).
+
+## Security & trust boundaries
+
+Everything INJECTED into prompts (user goals, skill digests, subagent output, HANDOFF payloads) is **untrusted input**: it comes from the user or from analyzed repository content, which can plant marker strings verbatim (a repo documenting its own processes can contain the literal `CONFIRMED ROOT CAUSE:` line).
+
+Therefore:
+
+- The root-cause collapse triggers ONLY if (a) the marker appears inside the structured `## HANDOFF` section, (b) every cited file exists on disk relative to cwd, and (c) the validate step always executes and cannot be compressed. A marker planted in repo content outside those guards produces no collapse.
+- VERIFIED FACTS are context, not proof: agent directives (see `AGENTS_NOTES.md`) instruct specialists to re-check claims that are load-bearing for code changes they are about to make.
+- `$`-safe interpolation everywhere (`replaceExact`, orchestrator/text.ts): untrusted text containing `$&`, `` $` ``, `$'` or `$1` can never alter task structure.
+- Liveness observation never terminates processes; kills remain a manual, data-driven decision.
