@@ -163,6 +163,7 @@ const SKILL_CLASSES: Record<string, SkillClass> = {
   "gstack-investigate": "format-critical",
   "grilling": "format-critical",
   "gstack-document-generate": "format-critical",
+  "gstack-fix-strategy": "format-critical",
   "gstack-ship": "support",
   "gstack-office-hours": "support",
   "gstack-plan-eng-review": "support",
@@ -325,7 +326,8 @@ function buildSubagentInstructions(phase: WorkflowPhase, ctx: WorkflowContext): 
     parts.push(JSON.stringify({
       chain: phase.chain.map((step) => ({
         agent: step.agent,
-        task: interpolate(step.task, ctx),
+        // STEP 3c: per-step skill override, defaulting to the phase's skills.
+        task: interpolate(buildTaskSkills(phase, step.task, step.skills ?? phase.skills), ctx),
       })),
     }, null, 2));
     parts.push("```");
@@ -530,12 +532,13 @@ function appendOutputContract(task: string): string {
   return `${task}\n\n---\n\n${OUTPUT_CONTRACT}`;
 }
 
-function buildTaskSkills(phase: WorkflowPhase, task: string): string {
-  if (!skillsEnabled() || !phase.skills || phase.skills.length === 0) {
+function buildTaskSkills(phase: WorkflowPhase, task: string, skillsOverride?: string[]): string {
+  const ids = skillsOverride ?? phase.skills;
+  if (!skillsEnabled() || !ids || ids.length === 0) {
     return appendOutputContract(task);
   }
   const blocks: string[] = [];
-  for (const id of phase.skills) {
+  for (const id of ids) {
     const digest = loadSkillDigest(id);
     const info = getSkillInfo(id);
     // Per-skill class prefix (STEP 1c): format-critical digests are part of
@@ -580,9 +583,10 @@ export function buildDeterministicPlan(phase: WorkflowPhase, ctx: WorkflowContex
   const boundary = scopeBoundaryFor(phase.id);
   const suffix = boundary ? `\n\n${boundary}` : "";
   if (phase.chain && phase.chain.length > 0) {
+    // STEP 3c: each chain step resolves its own skill set (default: phase.skills).
     return phase.chain.map((step) => ({
       agent: step.agent,
-      task: interpolate(buildTaskSkills(phase, step.task), ctx) + suffix,
+      task: interpolate(buildTaskSkills(phase, step.task, step.skills ?? phase.skills), ctx) + suffix,
     }));
   }
   return [{ agent: phase.agent ?? "worker", task: interpolate(buildAgentTask(phase, ctx), ctx) + suffix }];

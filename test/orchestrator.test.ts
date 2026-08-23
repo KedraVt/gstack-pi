@@ -806,3 +806,39 @@ describe("optional-phase modes (STEP 2g)", () => {
     }
   });
 });
+
+// --- STEP 3: role-scoped skill injection -------------------------------------
+
+describe("role-scoped skill injection (STEP 3)", () => {
+  test("root-cause chain: scout gets the investigation digest, planner gets fix-strategy only", () => {
+    const rootCause = findPhase("investigate", "root-cause");
+    const plan = buildDeterministicPlan(rootCause, makeCtx("investigate", 1));
+    assert.deepEqual(plan.map((s) => s.agent), ["scout", "planner"]);
+    assert.ok(plan[0].task.includes("Skill methodology: gstack-investigate"), "scout lost the full methodology");
+    assert.ok(plan[1].task.includes("Skill methodology: gstack-fix-strategy"), "planner missing the fix-strategy digest");
+    assert.ok(!plan[1].task.includes("gstack-investigate"), "planner must NOT receive the full investigation digest [E1]");
+  });
+
+  test("gstack-fix-strategy is a vendored registry skill with a small digest", () => {
+    const info = getSkillInfo("gstack-fix-strategy");
+    assert.ok(info);
+    assert.equal(info.fullPath, null, "must be vendored (no upstream SKILL.md)");
+    const digest = loadSkillDigest("gstack-fix-strategy");
+    assert.ok(digest);
+    assert.ok(digest.length < 800, `digest too large: ${digest.length} chars`);
+    assert.ok(digest.includes("# Skill:"));
+    assert.ok(info.dod.includes("DoD:") && /BP:/.test(info.dod));
+  });
+
+  test("chain steps without an override inherit the phase skills", () => {
+    // The document phase has no per-step override: its steps keep gstack-document-*.
+    const doc = findPhase("develop", "document");
+    const plan = buildDeterministicPlan(doc, makeCtx("develop", 7));
+    for (const step of plan) {
+      assert.ok(
+        step.task.includes("Skill methodology: gstack-document-release") || step.task.includes("Skill methodology: gstack-document-generate"),
+        "inherited phase skills lost",
+      );
+    }
+  });
+});

@@ -79,6 +79,11 @@ const REGISTRY: Record<string, RegistryEntry> = {
     dod: "DoD: rounds end only when the frontier is empty (nothing silently assumed); every question carried a recommended answer; facts looked up, decisions asked. BP: batch the frontier per round; wait for answers before recomputing.",
     // vendored protocol — no upstream SKILL.md
   },
+  "gstack-fix-strategy": {
+    summary: "Minimal-fix strategy for a CONFIRMED root cause: validation-first, minimal diff, regression test per fix",
+    dod: "DoD: `VALIDATED: <mechanism @ file:line>` first line, then exact files to change + regression risks; `REFUTED: <reason>` first line if the cause does not hold. BP: no fix without a validated mechanism confirmed against code; minimal diff only; every fix ships a regression test that fails before and passes after.",
+    // vendored digest derived from the investigate methodology's Phase 4 — no upstream SKILL.md
+  },
 };
 
 export function getSkillIds(): string[] {

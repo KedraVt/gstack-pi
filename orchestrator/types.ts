@@ -3,7 +3,16 @@ export interface WorkflowPhase {
   name: string;
   execution: "main" | "subagent";
   agent?: string;
-  chain?: Array<{ agent: string; task: string }>;
+  chain?: Array<{
+    agent: string;
+    task: string;
+    /**
+     * Per-step skill override (STEP 3). Default: inherits phase.skills —
+     * lets a chain step receive a role-scoped digest (e.g. the planner gets
+     * gstack-fix-strategy instead of the full investigation methodology).
+     */
+    skills?: string[];
+  }>;
   optional: boolean;
   skipWhen?: (ctx: WorkflowContext) => boolean;
   /** Distilled skill digests injected by the orchestrator (ids from the skills registry). */
