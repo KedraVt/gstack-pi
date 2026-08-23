@@ -1,6 +1,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { createState, advancePhase, abortState, resumeState, pauseState, gateForApproval, approveNext } from "../orchestrator/state.ts";
 import { getAllWorkflows, getWorkflow, getWorkflowIds } from "../orchestrator/workflows.ts";
 import { loadSkillDigest, getSkillInfo, buildSkillIndex, getSkillIds } from "../orchestrator/skills.ts";
@@ -8,6 +11,15 @@ import { buildPhaseInstructions, buildDeterministicPlan, planFilePath } from "..
 import type { WorkflowContext, WorkflowPhase } from "../orchestrator/types.ts";
 import { launchPhase, ctxAlive } from "../orchestrator/executor.ts";
 import { activityLabelFromEvent } from "../orchestrator/spawn.ts";
+import {
+  beginRun,
+  ensureRun,
+  recordDelegatedStep,
+  buildRunReport,
+  runReportFileName,
+  writeRunReport,
+  resetTelemetry,
+} from "../orchestrator/telemetry.ts";
 
 // --- Live subagent activity labels ----------------------------------------
 
@@ -485,5 +497,86 @@ describe("intent matching", () => {
     const text = "does this work? test the site please";
     const matched = wf.intents.some((i) => i.pattern.test(text));
     assert.ok(matched);
+  });
+});
+
+// --- STEP 0: structured run-report telemetry --------------------------------
+
+describe("run-report telemetry", () => {
+  test("report schema is stable", () => {
+    resetTelemetry();
+    beginRun("investigate");
+    recordDelegatedStep({
+      phaseId: "root-cause",
+      stepIndex: 0,
+      agent: "scout",
+      durationMs: 65432,
+      toolCalls: 27,
+      turns: 9,
+      tokensIn: 120000,
+      tokensCacheRead: 90000,
+      tokensOut: 5400,
+      timeoutClass: "default",
+    });
+    const report = buildRunReport("investigate");
+    assert.equal(report.workflowId, "investigate");
+    assert.equal(report.steps.length, 1);
+    const step = report.steps[0];
+    for (const key of [
+      "phaseId", "stepIndex", "agent", "durationMs", "toolCalls", "turns",
+      "tokensIn", "tokensCacheRead", "tokensOut", "handoffLevel", "incomplete",
+      "timedOut", "timeoutClass",
+    ]) {
+      assert.ok(key in step, `missing field in report step: ${key}`);
+    }
+    assert.ok(report.startedAt.length > 0);
+    assert.ok(report.writtenAt.length > 0);
+    assert.ok(Array.isArray(report.livenessObservations));
+  });
+
+  test("writeRunReport persists a JSON report under .gstack/runs after a simulated run", () => {
+    resetTelemetry();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "gstack-telemetry-"));
+    try {
+      beginRun("investigate");
+      recordDelegatedStep({ phaseId: "reproduce", stepIndex: 0, agent: "worker", durationMs: 1000, timeoutClass: "default" });
+      const filePath = writeRunReport(tmp, "investigate");
+      assert.ok(filePath, "expected a written report");
+      assert.ok(existsSync(filePath));
+      assert.ok(filePath.includes(path.join(".gstack", "runs")));
+      assert.ok(/\.json$/.test(filePath));
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      assert.equal(parsed.workflowId, "investigate");
+      assert.equal(parsed.steps.length, 1);
+      assert.equal(parsed.steps[0].phaseId, "reproduce");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      resetTelemetry();
+    }
+  });
+
+  test("writing is best-effort: consumed accumulator and foreign workflow yield null, never a throw", () => {
+    resetTelemetry();
+    beginRun("qa");
+    assert.equal(writeRunReport(process.cwd(), "develop"), null); // different workflow
+    assert.ok(writeRunReport(process.cwd(), "qa"), "active run should write");
+    assert.equal(writeRunReport(process.cwd(), "qa"), null, "accumulator consumed after flush");
+    resetTelemetry();
+  });
+
+  test("ensureRun starts a run once and does not clobber an active one", () => {
+    resetTelemetry();
+    ensureRun("ship");
+    recordDelegatedStep({ phaseId: "review", stepIndex: 0, agent: "reviewer", durationMs: 10 });
+    ensureRun("ship"); // must NOT reset the accumulator
+    recordDelegatedStep({ phaseId: "test", stepIndex: 0, agent: "worker", durationMs: 20 });
+    assert.equal(buildRunReport("ship").steps.length, 2);
+    resetTelemetry();
+  });
+
+  test("file names are Windows-safe (no colons)", () => {
+    const name = runReportFileName("2026-08-23T10:30:00.000Z", "investigate");
+    assert.ok(!name.includes(":"));
+    assert.ok(name.endsWith("-investigate.json"));
   });
 });

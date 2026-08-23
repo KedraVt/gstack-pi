@@ -6,6 +6,7 @@ import { buildPhaseInstructions, buildDeterministicPlan } from "./templates.ts";
 import { detectGitContext } from "./git.ts";
 import { runSubagent, type SpawnResult } from "./spawn.ts";
 import { deterministicSubagents, skillsEnabled } from "./config.ts";
+import { ensureRun, recordDelegatedStep, writeRunReport } from "./telemetry.ts";
 
 // --- Runtime liveness -------------------------------------------------------
 // Background phase chains (deterministic subagent runs) intentionally outlive
@@ -80,9 +81,13 @@ export async function executeCurrentPhase(
     notify(`Unknown workflow: ${state.workflowId}`, "error");
     return;
   }
+  // STEP 0 telemetry: make sure this run is being accumulated.
+  ensureRun(state.workflowId);
 
   const phase = workflow.phases[state.phaseIndex];
   if (!phase) {
+    // Workflow completed: flush the structured run report (STEP 0 telemetry).
+    writeRunReport(ctx.cwd, state.workflowId);
     saveState(pi, { ...state, status: "completed" });
     try {
       ctx.ui.setStatus("gstack", undefined);
@@ -134,6 +139,22 @@ export async function executeCurrentPhase(
   if (deterministicSubagents() && phase.execution === "subagent") {
     const results = await runDeterministicDelegation(phase, wfCtx, ctx, alive);
     if (!alive()) return;
+    // STEP 0 telemetry: persist per-step measurements (persistence only —
+    // every number already exists on SpawnResult).
+    for (const [stepIndex, { agent, result }] of results.entries()) {
+      recordDelegatedStep({
+        phaseId: phase.id,
+        stepIndex,
+        agent,
+        durationMs: result.durationMs,
+        toolCalls: result.toolCalls,
+        turns: result.turns,
+        tokensIn: result.usage?.input,
+        tokensCacheRead: result.usage?.cacheRead,
+        tokensOut: result.usage?.output,
+        timeoutClass: "default",
+      });
+    }
     delegationPrefix = formatDelegationResults(phase.id, results);
     // Restore the phase status line (delegation left subagent progress there).
     try {

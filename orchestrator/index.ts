@@ -6,6 +6,7 @@ import { loadActiveState, saveState, advancePhase, gateForApproval, createState 
 import { getWorkflow, getWorkflowIds } from "./workflows.ts";
 import { launchPhase, invalidateRuntime } from "./executor.ts";
 import { manualGates } from "./config.ts";
+import { ensureRun, writeRunReport } from "./telemetry.ts";
 
 export function initOrchestrator(pi: ExtensionAPI): void {
   // Invalidate all in-flight background chains when the session is replaced,
@@ -68,6 +69,8 @@ export function initOrchestrator(pi: ExtensionAPI): void {
 
       if (newState.status === "completed") {
         ctx.ui.setStatus("gstack", undefined);
+        // STEP 0 telemetry: flush the structured run report for this run.
+        writeRunReport(ctx.cwd, state.workflowId);
         const completedPhases = Object.entries(newState.results)
           .filter(([, r]) => r.status === "completed")
           .map(([id]) => id);
@@ -159,6 +162,7 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       }
       const state = createState(workflow.id, params.goal);
       saveState(pi, state);
+      ensureRun(state.workflowId); // STEP 0 telemetry: start accumulating
       ctx.ui.notify(`gstack: starting ${workflow.name} (${workflow.phases.length} phases)`, "info");
       // Non-blocking: phase instructions arrive as a follow-up message once
       // any deterministic subagent work for the first phase has completed.
