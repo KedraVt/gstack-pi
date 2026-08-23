@@ -4,9 +4,41 @@ import { getWorkflow } from "./workflows.ts";
 import { saveState, advancePhase, gateForApproval } from "./state.ts";
 import { buildPhaseInstructions, buildDeterministicPlan } from "./templates.ts";
 import { detectGitContext } from "./git.ts";
-import { runSubagent, type SpawnResult } from "./spawn.ts";
-import { deterministicSubagents, skillsEnabled } from "./config.ts";
+import { runSubagent, type SpawnRequest, type SpawnResult, defaultTimeoutMs } from "./spawn.ts";
+import { deterministicSubagents, skillsEnabled, optionalPhases } from "./config.ts";
 import { ensureRun, recordDelegatedStep, writeRunReport } from "./telemetry.ts";
+import { extractHandoff } from "./handoff.ts";
+import { replaceExact } from "./text.ts";
+
+// --- Sequential-chain resilience (STEP 2f) -----------------------------------
+
+/** Delay before the single allowed retry of a transient chain-step failure. */
+export const RETRY_DELAY_MS = 30_000;
+
+export function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Transient failures may recover on a single retry: timeout, abort, or a
+ * non-zero exit without any output. Configuration errors (unknown agent,
+ * bad setup) are HARD and propagate immediately.
+ */
+export function isTransientFailure(result: SpawnResult): boolean {
+  if (result.ok) return false;
+  if (result.configError) return false;
+  if (result.timedOut) return true;
+  return (result.exitCode ?? 1) !== 0 && !result.output;
+}
+
+/**
+ * Decision for attempt N (1-based). At most one retry is allowed and it runs
+ * with a +50% timeout limit.
+ */
+export function retryDecision(result: SpawnResult, attempt: number): { retry: boolean; timeoutScale: number } {
+  if (attempt >= 2 || !isTransientFailure(result)) return { retry: false, timeoutScale: 1 };
+  return { retry: true, timeoutScale: 1.5 };
+}
 
 // --- Runtime liveness -------------------------------------------------------
 // Background phase chains (deterministic subagent runs) intentionally outlive
@@ -109,14 +141,33 @@ export async function executeCurrentPhase(
   }
 
   if (phase.optional) {
+    // STEP 2g: optional phases must never be abandoned silently. In
+    // fire-and-forget background runs a stale-context prompt failure now
+    // records `skipped` in state; GSTACK_PI_OPTIONAL_PHASES=auto|skip avoids
+    // the prompt entirely for background execution.
+    const mode = optionalPhases();
     let run: boolean;
-    try {
-      run = await ctx.ui.confirm(
-        `Optional phase: ${phase.name}`,
-        `Run the "${phase.name}" phase? (Skip to continue without it)`,
-      );
-    } catch {
-      return; // context went stale mid-prompt — abandon this chain silently
+    if (mode === "auto") {
+      run = true;
+    } else if (mode === "skip") {
+      run = false;
+    } else {
+      try {
+        run = await ctx.ui.confirm(
+          `Optional phase: ${phase.name}`,
+          `Run the "${phase.name}" phase? (Skip to continue without it)`,
+        );
+      } catch {
+        const skipped = advancePhase(
+          state,
+          phase.id,
+          { status: "skipped", summary: "Auto-skipped: approval prompt unavailable (stale context)" },
+          workflow.phases.length,
+        );
+        saveState(pi, skipped);
+        notify(`gstack: optional phase "${phase.name}" recorded as skipped (prompt unavailable).`, "warning");
+        return executeCurrentPhase(pi, ctx, skipped);
+      }
     }
     if (!alive()) return;
     if (!run) {
@@ -196,17 +247,15 @@ async function runDeterministicDelegation(
   const plan = buildDeterministicPlan(phase as any, wfCtx);
   const out: Array<{ agent: string; result: SpawnResult }> = [];
   let previous = "";
+  let prevIncomplete = false;
   for (const [index, step] of plan.entries()) {
     if (!alive()) break; // session reloaded mid-chain — stop spawning work
-    // Cap the handoff payload: a full 50K-char upstream report inflates every
-    // downstream turn's prefill and encourages re-exploration. The orchestrator
-    // still receives the FULL output; specialists get the head of it.
-    const PREVIOUS_CAP = 12000;
-    const previousForTask =
-      previous.length > PREVIOUS_CAP
-        ? `${previous.slice(0, PREVIOUS_CAP)}\n…(handoff truncated at ${PREVIOUS_CAP} chars — full report available in phase summary)`
-        : previous;
-    const task = step.task.replace(/\{previous\}/g, previousForTask || "(no prior output)");
+    // STEP 2c: the receiver gets the extracted HANDOFF (computed on the RAW
+    // uncapped upstream output), never the entire report — a full 50K-char
+    // payload inflated every downstream turn's prefill and encouraged
+    // re-verification of already-settled facts.
+    const handoff = extractHandoff(previous, { incomplete: prevIncomplete });
+    const task = replaceExact(step.task, /\{previous\}/g, handoff.text || "(no prior output)");
     try {
       ctx.ui.notify(`gstack: running subagent "${step.agent}"…`, "info");
     } catch {
@@ -229,15 +278,36 @@ async function runDeterministicDelegation(
     };
     setStatus("starting…");
 
-    const result = await runSubagent({
+    const req: SpawnRequest = {
       agent: step.agent,
       task,
       cwd: wfCtx.cwd,
       shouldAbort: () => !alive(),
       onActivity: setStatus,
-    });
+    };
+    // STEP 2f: at most one retry for transient failures, with a +50% timeout.
+    let result = await runSubagent(req);
+    const decision = retryDecision(result, 1);
+    if (decision.retry && alive()) {
+      try {
+        ctx.ui.notify(
+          `gstack: subagent "${step.agent}" failed transiently (${result.timedOut ? "timeout" : `exit ${result.exitCode}`}) — retrying once in 30s with a raised limit…`,
+          "warning",
+        );
+      } catch {
+        /* stale ctx */
+      }
+      await delay(RETRY_DELAY_MS);
+      if (alive()) {
+        result = await runSubagent({
+          ...req,
+          timeoutMs: Math.round((req.timeoutMs ?? defaultTimeoutMs()) * decision.timeoutScale),
+        });
+      }
+    }
     out.push({ agent: step.agent, result });
-    previous = result.output || result.error || "";
+    previous = result.rawOutput ?? (result.output || result.error || "");
+    prevIncomplete = !result.ok || result.incomplete === true;
   }
   return out;
 }
@@ -262,7 +332,16 @@ function formatDelegationResults(
       const tok = result.usage
         ? `tokens in ${result.usage.input} (cache ${result.usage.cacheRead}) out ${result.usage.output}`
         : "tokens n/a";
-      parts.push(`### Subagent: ${agent} — ${result.ok ? "completed" : "FAILED"} (${secs}s · ${result.toolCalls ?? "?"} tool calls · ${turns} turns · ${avgTurn} · ${tok})`);
+      // STEP 2c: make the handoff quality visible for every step.
+      let handoffSuffix = "";
+      if (result.ok) {
+        const level = extractHandoff(result.rawOutput ?? result.output ?? "", { incomplete: result.incomplete }).level;
+        handoffSuffix = ` · handoff: ${level}`;
+        if (result.incomplete) {
+          handoffSuffix += `, output INCOMPLETE (${result.timedOut ? "timed out" : "partial output"})`;
+        }
+      }
+      parts.push(`### Subagent: ${agent} — ${result.ok ? "completed" : "FAILED"} (${secs}s · ${result.toolCalls ?? "?"} tool calls · ${turns} turns · ${avgTurn}${handoffSuffix} · ${tok})`);
     if (result.ok) {
       parts.push(result.output || "(no textual output)");
     } else {

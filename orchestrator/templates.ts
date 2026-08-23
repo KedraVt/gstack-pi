@@ -2,6 +2,7 @@ import type { WorkflowPhase, WorkflowContext, Workflow } from "./types.ts";
 import { getWorkflow } from "./workflows.ts";
 import { loadSkillDigest, getSkillInfo, type SkillInfo } from "./skills.ts";
 import { skillsEnabled, manualGates, deterministicSubagents } from "./config.ts";
+import { replaceExact } from "./text.ts";
 
 /** Deterministic slug for the plan file written by the interactive planning phase. */
 export function planFileSlug(goal: string): string {
@@ -509,8 +510,30 @@ Goal: {goal} | Branch: {branch}
  * processes have isolated contexts — embedding the methodology in the task is
  * the only reliable way for them to receive it.
  */
+/**
+ * Embed the full distilled digests into a subagent task string. Subagent
+ * processes have isolated contexts — embedding the methodology in the task is
+ * the only reliable way for them to receive it.
+ */
+// OUTPUT CONTRACT (STEP 2a): every specialist ends its work with a structured
+// HANDOFF section so the next chain step receives verified facts, not a wall
+// of text. Appended AFTER the METHODOLOGY block.
+const OUTPUT_CONTRACT = `## OUTPUT CONTRACT
+1. "## REPORT" — the full report in your role's format.
+2. "## HANDOFF" (mandatory, ≤300 words, for the next specialist):
+   - VERIFIED FACTS: confirmed facts only, each with evidence \`claim @ file:line\`
+   - DECISIONS: choices made and why (one line each)
+   - OPEN QUESTIONS: what remains open (or "none")
+   - DO NOT REDO: what the next agent must NOT redo`;
+
+function appendOutputContract(task: string): string {
+  return `${task}\n\n---\n\n${OUTPUT_CONTRACT}`;
+}
+
 function buildTaskSkills(phase: WorkflowPhase, task: string): string {
-  if (!skillsEnabled() || !phase.skills || phase.skills.length === 0) return task;
+  if (!skillsEnabled() || !phase.skills || phase.skills.length === 0) {
+    return appendOutputContract(task);
+  }
   const blocks: string[] = [];
   for (const id of phase.skills) {
     const digest = loadSkillDigest(id);
@@ -524,10 +547,10 @@ function buildTaskSkills(phase: WorkflowPhase, task: string): string {
       blocks.push(`## Skill methodology: ${id} (${skillClassFor(id)})\n${prefix}\nBefore starting, read the file ${info.fullPath} and follow its methodology.`);
     }
   }
-  if (blocks.length === 0) return task;
-  // Fixed 4-block order: the task (DELIVERABLE / STOP CONDITION / CONTEXT)
-  // comes FIRST, the METHODOLOGY block LAST.
-  return `${task}\n\n---\n\n## METHODOLOGY\n\n${blocks.join("\n\n---\n\n")}`;
+  if (blocks.length === 0) return appendOutputContract(task);
+  // Fixed block order: the task (DELIVERABLE / STOP CONDITION / CONTEXT)
+  // first, then METHODOLOGY, then the OUTPUT CONTRACT last.
+  return `${task}\n\n---\n\n## METHODOLOGY\n\n${blocks.join("\n\n---\n\n")}\n\n---\n\n${OUTPUT_CONTRACT}`;
 }
 
 /**
@@ -566,10 +589,11 @@ export function buildDeterministicPlan(phase: WorkflowPhase, ctx: WorkflowContex
 }
 
 function interpolate(template: string, ctx: WorkflowContext): string {
-  return template
-    .replace(/\{goal\}/g, ctx.state.goal)
-    .replace(/\{branch\}/g, ctx.git.branch)
-    .replace(/\{plan_file\}/g, planFilePath(ctx.state.goal))
-    .replace(/\{(\w+)_summary\}/g, (_, phaseId: string) =>
-      ctx.state.results[phaseId]?.summary ?? "(not yet available)");
+  // $-safe (STEP 2c): untrusted values may contain `$&`, `$'`, `$1` etc.
+  let out = replaceExact(template, /\{goal\}/g, ctx.state.goal);
+  out = replaceExact(out, /\{branch\}/g, ctx.git.branch);
+  out = replaceExact(out, /\{plan_file\}/g, planFilePath(ctx.state.goal));
+  out = replaceExact(out, /\{(\w+)_summary\}/g, (_, phaseId: string) =>
+    ctx.state.results[phaseId]?.summary ?? "(not yet available)");
+  return out;
 }

@@ -20,11 +20,16 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const OUTPUT_CAP = 50 * 1024;
 
+/** Cap the output that reaches orchestrator context; rawOutput stays uncapped. */
+function capOutput(raw: string): string {
+  return raw.length > OUTPUT_CAP ? `${raw.slice(0, OUTPUT_CAP)}\n…(truncated)` : raw;
+}
+
 /**
  * Per-subagent timeout. Default 20 min; override with
  * GSTACK_PI_SUBAGENT_TIMEOUT (seconds, e.g. "300" for 5 min).
  */
-function defaultTimeoutMs(): number {
+export function defaultTimeoutMs(): number {
   const raw = process.env.GSTACK_PI_SUBAGENT_TIMEOUT;
   if (raw) {
     const secs = Number(raw);
@@ -97,6 +102,12 @@ export interface SpawnResult {
   ok: boolean;
   /** Final assistant text produced by the subagent (capped). */
   output: string;
+  /**
+   * UNCAPPED final output. The OUTPUT_CAP only applies to what reaches the
+   * orchestrator context; handoff extraction must run on the raw text or a
+   * trailing `## HANDOFF` section is lost on long reports (STEP 2c).
+   */
+  rawOutput?: string;
   error?: string;
   exitCode: number | null;
   durationMs: number;
@@ -104,6 +115,16 @@ export interface SpawnResult {
   toolCalls?: number;
   /** Assistant turns completed by the child. */
   turns?: number;
+  /**
+   * True when the run ended without a complete output: timeout, abort, or
+   * non-zero exit with partial output. Labeled partial output beats absent
+   * output — receivers degrade the handoff level instead of guessing.
+   */
+  incomplete?: boolean;
+  /** True when the child was killed by the timeout. */
+  timedOut?: boolean;
+  /** True when the failure is configuration-level (e.g. unknown agent) — never retried. */
+  configError?: boolean;
   /** Aggregate provider usage reported on assistant messages. */
   usage?: {
     input: number;
@@ -227,6 +248,7 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
       error: `Unknown agent "${req.agent}". Available agents: ${listAvailableAgents()}.`,
       exitCode: 1,
       durationMs: 0,
+      configError: true,
     };
   }
 
@@ -338,19 +360,20 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
       proc.on("error", () => finish(1));
     });
 
-    const rawOutput = aborted ? "" : extractFinalOutput(collected);
+    const rawOutput = extractFinalOutput(collected);
     if (timedOut) {
+      // STEP 2d: preserve the partial transcript, labeled incomplete.
       return {
         ok: false,
-        output: "",
+        output: capOutput(rawOutput),
+        rawOutput,
+        incomplete: true,
+        timedOut: true,
         error: `Subagent "${req.agent}" timed out after ${Math.round(timeoutMs / 1000)}s (limit configurable via GSTACK_PI_SUBAGENT_TIMEOUT, in seconds).`,
         exitCode,
         durationMs: Date.now() - started,
       };
     }
-    const output =
-      rawOutput.length > OUTPUT_CAP ? `${rawOutput.slice(0, OUTPUT_CAP)}\n…(truncated)` : rawOutput;
-
     if (!rawOutput && stderr.trim()) {
       return {
         ok: false,
@@ -358,14 +381,19 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
         error: stderr.trim().slice(0, 2000),
         exitCode,
         durationMs: Date.now() - started,
+        incomplete: aborted || undefined,
       };
     }
 
+    const exitFailed = exitCode !== null && exitCode !== 0;
     return {
       ok: Boolean(rawOutput),
-      output,
+      output: capOutput(rawOutput),
+      rawOutput,
       turns,
       usage: { ...usage },
+      incomplete: !rawOutput || aborted || exitFailed || undefined,
+      timedOut: undefined,
       error: rawOutput ? undefined : "Subagent produced no output.",
       exitCode,
       durationMs: Date.now() - started,

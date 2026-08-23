@@ -671,3 +671,138 @@ describe("deliverable-first contracts (STEP 1)", () => {
     }
   });
 });
+
+// --- STEP 2: HANDOFF protocol, safe interpolation, resilience ----------------
+
+import { extractHandoff } from "../orchestrator/handoff.ts";
+import { replaceExact } from "../orchestrator/text.ts";
+import { isTransientFailure, retryDecision, RETRY_DELAY_MS } from "../orchestrator/executor.ts";
+import { optionalPhases } from "../orchestrator/config.ts";
+
+function bigReport(handoffSection?: string): string {
+  const filler = "x".repeat(9000);
+  return `## REPORT\n${filler}\n${handoffSection ?? ""}`;
+}
+const GOOD_HANDOFF = "## HANDOFF\nVERIFIED FACTS:\n- retry loop resets state @ src/app.ts:42\nDECISIONS: none\nOPEN QUESTIONS: none\nDO NOT REDO: reproduction";
+
+describe("extractHandoff levels (STEP 2b)", () => {
+  test("small output travels whole at level raw", () => {
+    const h = extractHandoff("short report");
+    assert.equal(h.level, "raw");
+    assert.equal(h.text, "short report");
+  });
+
+  test("empty output yields the failed-step placeholder", () => {
+    const h = extractHandoff("");
+    assert.equal(h.level, "raw");
+    assert.equal(h.text, "(previous step failed)");
+    assert.equal(extractHandoff("   ").text, "(previous step failed)");
+  });
+
+  test("valid HANDOFF section inside a long report is extracted as full", () => {
+    const h = extractHandoff(bigReport(GOOD_HANDOFF));
+    assert.equal(h.level, "full");
+    assert.ok(h.text.startsWith("## HANDOFF"));
+    assert.ok(h.text.includes("VERIFIED FACTS"));
+    assert.ok(h.text.length <= 4000, "full handoff must stay within the 4000-char invariant");
+  });
+
+  test("malformed HANDOFF section degrades to partial", () => {
+    const h = extractHandoff(bigReport("## HANDOFF\nsome unstructured tail note"));
+    assert.equal(h.level, "partial");
+    assert.ok(h.text.includes("unstructured tail note"));
+  });
+
+  test("oversized or absent HANDOFF falls back to the paragraph-cut tail", () => {
+    const oversized = `## HANDOFF\nVERIFIED FACTS:\n${"y".repeat(5000)}`;
+    const h1 = extractHandoff(bigReport(oversized));
+    assert.equal(h1.level, "fallback");
+    assert.ok(h1.text.length <= 12000);
+    const h2 = extractHandoff("z".repeat(20000));
+    assert.equal(h2.level, "fallback");
+    assert.ok(h2.text.length <= 12000);
+  });
+
+  test("incomplete output caps the level at fallback", () => {
+    assert.equal(extractHandoff(bigReport(GOOD_HANDOFF), { incomplete: true }).level, "fallback");
+    assert.equal(extractHandoff("tiny", { incomplete: true }).level, "fallback");
+  });
+});
+
+describe("$-safe interpolation (STEP 2c)", () => {
+  test("replaceExact treats $ patterns literally", () => {
+    const evil = `$& $\` $' $1 $$`;
+    assert.equal(replaceExact("A B", /B/, evil), `A ${evil}`);
+    // Sanity: naive .replace would have corrupted the output.
+    assert.notEqual("A B".replace(/B/, evil), `A ${evil}`);
+  });
+
+  function ctxWithGoal(goal: string): WorkflowContext {
+    const c = makeCtx("develop", 0);
+    c.state.goal = goal;
+    return c;
+  }
+
+  test("interpolate() survives $&, $', $1 payloads in the user goal", () => {
+    const evilGoal = "add $& dark $' mode $1 toggle $$";
+    const explore = findPhase("develop", "explore");
+    const plan = buildDeterministicPlan(explore, ctxWithGoal(evilGoal));
+    assert.ok(plan[0].task.includes(evilGoal), "goal corrupted by $ pattern interpolation");
+  });
+});
+
+describe("AGENTS_NOTES mirror (STEP 2e)", () => {
+  const PLANNER_DIRECTIVE = "You receive VERIFIED FACTS from a prior specialist. Treat them as context, not proof: do NOT re-verify systematically, but ALWAYS re-check claims that are load-bearing for code changes you are about to make.";
+  const WORKER_DIRECTIVE = "Trust the HANDOFF section of the task as working context; re-check only claims that are load-bearing for edits you are about to make.";
+  const HOME_AGENTS_DIR = path.join(os.homedir(), ".pi", "agent", "agents");
+
+  test("home agent files carry the directives documented in AGENTS_NOTES.md", () => {
+    const planner = readFileSync(path.join(HOME_AGENTS_DIR, "planner.md"), "utf-8");
+    const worker = readFileSync(path.join(HOME_AGENTS_DIR, "worker.md"), "utf-8");
+    assert.ok(planner.includes(PLANNER_DIRECTIVE), "planner.md drifted from AGENTS_NOTES.md");
+    assert.ok(worker.includes(WORKER_DIRECTIVE), "worker.md drifted from AGENTS_NOTES.md");
+  });
+
+  test("AGENTS_NOTES.md documents both directives", () => {
+    const notes = readFileSync(path.join(process.cwd(), "AGENTS_NOTES.md"), "utf-8");
+    assert.ok(notes.includes("planner.md"));
+    assert.ok(notes.includes("worker.md"));
+  });
+});
+
+describe("chain retry policy (STEP 2f)", () => {
+  const okResult: any = { ok: true, output: "done", exitCode: 0, durationMs: 10 };
+  const timeoutResult: any = { ok: false, output: "partial", exitCode: null, durationMs: 100, timedOut: true, incomplete: true };
+  const exitFailNoOutput: any = { ok: false, output: "", error: "crashed", exitCode: 3, durationMs: 50 };
+  const configError: any = { ok: false, output: "", error: 'Unknown agent "nope".', exitCode: 1, durationMs: 0, configError: true };
+
+  test("transient failures are retried once with a +50% timeout; hard failures are not", () => {
+    assert.deepEqual(retryDecision(timeoutResult, 1), { retry: true, timeoutScale: 1.5 });
+    assert.deepEqual(retryDecision(exitFailNoOutput, 1), { retry: true, timeoutScale: 1.5 });
+    assert.deepEqual(retryDecision(okResult, 1), { retry: false, timeoutScale: 1 });
+    assert.deepEqual(retryDecision(configError, 1), { retry: false, timeoutScale: 1 });
+    assert.deepEqual(retryDecision(timeoutResult, 2), { retry: false, timeoutScale: 1 }, "at most one retry");
+    assert.equal(RETRY_DELAY_MS, 30_000);
+    assert.equal(isTransientFailure(configError), false);
+    assert.equal(isTransientFailure(timeoutResult), true);
+  });
+});
+
+describe("optional-phase modes (STEP 2g)", () => {
+  test("GSTACK_PI_OPTIONAL_PHASES resolves ask/auto/skip with ask default", () => {
+    const original = process.env.GSTACK_PI_OPTIONAL_PHASES;
+    try {
+      delete process.env.GSTACK_PI_OPTIONAL_PHASES;
+      assert.equal(optionalPhases(), "ask");
+      process.env.GSTACK_PI_OPTIONAL_PHASES = "auto";
+      assert.equal(optionalPhases(), "auto");
+      process.env.GSTACK_PI_OPTIONAL_PHASES = "skip";
+      assert.equal(optionalPhases(), "skip");
+      process.env.GSTACK_PI_OPTIONAL_PHASES = "garbage";
+      assert.equal(optionalPhases(), "ask");
+    } finally {
+      if (original === undefined) delete process.env.GSTACK_PI_OPTIONAL_PHASES;
+      else process.env.GSTACK_PI_OPTIONAL_PHASES = original;
+    }
+  });
+});
