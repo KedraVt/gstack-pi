@@ -51,6 +51,8 @@ export interface SpawnRequest {
   agent: string;
   task: string;
   cwd: string;
+  /** Phase id — resolves the per-class timeout via config.subagentTimeoutFor. */
+  phaseId?: string;
   timeoutMs?: number;
   /**
    * Polled once per second; when it returns true (e.g. the session was
@@ -63,6 +65,17 @@ export interface SpawnRequest {
    * tool-renderer — deterministic spawns run outside any tool call.
    */
   onActivity?: (label: string) => void;
+  /**
+   * STEP 5b: observe-only liveness sink. Called AT MOST ONCE per run when the
+   * JSON event stream has been silent longer than GSTACK_PI_LIVENESS_SEC.
+   * The process is NEVER terminated because of this.
+   */
+  onLiveness?: (observation: {
+    agent: string;
+    gapSec: number;
+    lastEvent: string;
+    lastTool?: string;
+  }) => void;
 }
 
 /**
@@ -284,10 +297,19 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
       let buffer = "";
       const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
       let turns = 0;
+      // STEP 5b: observe-only liveness tracking.
+      let lastEventAt = Date.now();
+      let lastEventType = "(start)";
+      let lastToolName: string | undefined;
+      let livenessNotified = false;
       const processLine = (line: string) => {
         if (!line.trim()) return;
         try {
           const event = JSON.parse(line);
+          lastEventAt = Date.now();
+          if (event?.type) lastEventType = String(event.type);
+          const toolName = event?.toolName ?? event?.name ?? event?.tool?.name;
+          if (toolName) lastToolName = String(toolName);
           if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
             collected.push(event.message);
           }
@@ -319,7 +341,7 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
         stderr += data.toString();
       });
 
-      const timeoutMs = req.timeoutMs ?? defaultTimeoutMs();
+      const timeoutMs = req.timeoutMs ?? (req.phaseId ? subagentTimeoutFor(req.phaseId) : defaultTimeoutMs());
       const timer = setTimeout(() => {
         timedOut = true;
         try {
@@ -343,6 +365,23 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
             setTimeout(() => proc.kill("SIGKILL"), 5000);
           } catch {
             /* ignore */
+          }
+          return;
+        }
+        // STEP 5b: observe-only liveness — notify + record, NEVER terminate.
+        if (req.onLiveness && !livenessNotified) {
+          const threshold = livenessThresholdMs();
+          if (threshold !== "off") {
+            const gapMs = Date.now() - lastEventAt;
+            if (gapMs > threshold) {
+              livenessNotified = true;
+              req.onLiveness({
+                agent: req.agent,
+                gapSec: Math.round(gapMs / 1000),
+                lastEvent: lastEventType,
+                lastTool: lastToolName,
+              });
+            }
           }
         }
       }, 1000);

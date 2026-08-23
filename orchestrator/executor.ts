@@ -5,8 +5,8 @@ import { saveState, advancePhase, gateForApproval } from "./state.ts";
 import { buildPhaseInstructions, buildDeterministicPlan } from "./templates.ts";
 import { detectGitContext } from "./git.ts";
 import { runSubagent, type SpawnRequest, type SpawnResult, defaultTimeoutMs } from "./spawn.ts";
-import { deterministicSubagents, skillsEnabled, optionalPhases } from "./config.ts";
-import { ensureRun, recordDelegatedStep, writeRunReport } from "./telemetry.ts";
+import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens } from "./config.ts";
+import { ensureRun, recordDelegatedStep, writeRunReport, recordLiveness, recordTokens, totalTokensUsed } from "./telemetry.ts";
 import { extractHandoff } from "./handoff.ts";
 import { isRefutedStrategy } from "./skip.ts";
 import { replaceExact } from "./text.ts";
@@ -300,8 +300,22 @@ async function runDeterministicDelegation(
         agent: step.agent,
         task,
         cwd: wfCtx.cwd,
+        // STEP 5a: per-class timeout resolved from the phase id.
+        phaseId: phase.id,
         shouldAbort: () => !alive(),
         onActivity: setStatus,
+        // STEP 5b: observe-only liveness — dual sink (notify + run report).
+        onLiveness: (obs) => {
+          recordLiveness(obs);
+          try {
+            ctx.ui.notify(
+              `[liveness-observe] would abort '${obs.agent}' after ${obs.gapSec}s of silence (last event: ${obs.lastEvent}, tool: ${obs.lastTool ?? "n/a"})`,
+              "warning",
+            );
+          } catch {
+            /* stale ctx */
+          }
+        },
       };
       // STEP 2f: at most one retry for transient failures, with a +50% timeout.
       let result = await runSubagent(req);
@@ -326,6 +340,21 @@ async function runDeterministicDelegation(
       out.push({ agent: step.agent, result });
       previous = result.rawOutput ?? (result.output || result.error || "");
       prevIncomplete = !result.ok || result.incomplete === true;
+      // STEP 5c: token budget circuit-breaker — notify + orderly stop, no kill.
+      const used =
+        (result.usage?.input ?? 0) + (result.usage?.cacheRead ?? 0) + (result.usage?.output ?? 0);
+      recordTokens(used);
+      if (totalTokensUsed() > maxRunTokens()) {
+        try {
+          ctx.ui.notify(
+            `gstack: GSTACK_PI_MAX_RUN_TOKENS exceeded (${totalTokensUsed()} tokens) — stopping the chain orderly.`,
+            "warning",
+          );
+        } catch {
+          /* stale ctx */
+        }
+        break;
+      }
     }
     return out;
   };

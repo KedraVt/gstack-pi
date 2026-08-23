@@ -976,3 +976,128 @@ describe("auto-gate opt-in (STEP 4e)", () => {
     }
   });
 });
+
+// --- STEP 5: adaptive timeouts, liveness, token budget -----------------------
+
+import {
+  numberEnv,
+  timeoutClassFor,
+  subagentTimeoutFor,
+  livenessThresholdMs,
+  maxRunTokens,
+} from "../orchestrator/config.ts";
+import { recordTokens, totalTokensUsed, recordLiveness, buildRunReport as reportOf } from "../orchestrator/telemetry.ts";
+
+describe("timeout classes (STEP 5a)", () => {
+  test("every phase of every workflow resolves to a known class (no fallback fallthrough)", () => {
+    for (const wf of getAllWorkflows()) {
+      for (const phase of wf.phases) {
+        assert.ok(
+          timeoutClassFor(phase.id) !== null,
+          `${wf.id}/${phase.id} is not mapped to a timeout class`,
+        );
+      }
+    }
+  });
+
+  test("per-class env overrides are honored (seconds -> ms)", () => {
+    const saved: Record<string, string | undefined> = {};
+    const keys = ["GSTACK_PI_TIMEOUT_EXPLORE", "GSTACK_PI_TIMEOUT_WORK", "GSTACK_PI_TIMEOUT_VERIFY", "GSTACK_PI_SUBAGENT_TIMEOUT"];
+    for (const k of keys) { saved[k] = process.env[k]; delete process.env[k]; }
+    try {
+      assert.equal(subagentTimeoutFor("explore"), 900 * 1000);
+      assert.equal(subagentTimeoutFor("implement"), 1500 * 1000);
+      assert.equal(subagentTimeoutFor("review"), 900 * 1000);
+      assert.equal(subagentTimeoutFor("totally-unknown-phase"), 1200 * 1000);
+      process.env.GSTACK_PI_TIMEOUT_WORK = "60";
+      assert.equal(subagentTimeoutFor("implement"), 60 * 1000);
+      process.env.GSTACK_PI_TIMEOUT_WORK = "garbage";
+      assert.equal(subagentTimeoutFor("implement"), 1500 * 1000, "invalid value falls back to default");
+    } finally {
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+});
+
+describe("numeric config parser (STEP 5a / COR-10)", () => {
+  test("numberEnv handles default/override/off/invalid", () => {
+    const NAME = "GSTACK_PI_TEST_NUMBER";
+    const original = process.env[NAME];
+    try {
+      delete process.env[NAME];
+      assert.equal(numberEnv(NAME, 42), 42);
+      process.env[NAME] = "7";
+      assert.equal(numberEnv(NAME, 42), 7);
+      process.env[NAME] = "off";
+      assert.equal(numberEnv(NAME, 42), 42, "off sentinel requires allowOff");
+      assert.equal(numberEnv(NAME, 42, { allowOff: true }), "off");
+      process.env[NAME] = "abc";
+      assert.equal(numberEnv(NAME, 42), 42);
+      process.env[NAME] = "-3";
+      assert.equal(numberEnv(NAME, 42), 42);
+      process.env[NAME] = "2";
+      assert.equal(numberEnv(NAME, 42, { min: 10 }), 42, "below min falls back");
+    } finally {
+      if (original === undefined) delete process.env[NAME];
+      else process.env[NAME] = original;
+    }
+  });
+
+  test("liveness threshold default 240s and supports off", () => {
+    const NAME = "GSTACK_PI_LIVENESS_SEC";
+    const original = process.env[NAME];
+    try {
+      delete process.env[NAME];
+      assert.equal(livenessThresholdMs(), 240 * 1000);
+      process.env[NAME] = "off";
+      assert.equal(livenessThresholdMs(), "off");
+      process.env[NAME] = "30";
+      assert.equal(livenessThresholdMs(), 30 * 1000);
+    } finally {
+      if (original === undefined) delete process.env[NAME];
+      else process.env[NAME] = original;
+    }
+  });
+
+  test("token budget default disabled", () => {
+    const NAME = "GSTACK_PI_MAX_RUN_TOKENS";
+    const original = process.env[NAME];
+    try {
+      delete process.env[NAME];
+      assert.equal(maxRunTokens(), Number.POSITIVE_INFINITY);
+      process.env[NAME] = "100000";
+      assert.equal(maxRunTokens(), 100000);
+    } finally {
+      if (original === undefined) delete process.env[NAME];
+      else process.env[NAME] = original;
+    }
+  });
+});
+
+describe("token circuit-breaker + liveness recording (STEP 5b/5c)", () => {
+  test("token accumulation feeds the breaker decision without killing anything", () => {
+    resetTelemetry();
+    beginRun("qa");
+    assert.equal(totalTokensUsed(), 0);
+    recordTokens(500);
+    recordTokens(300);
+    assert.equal(totalTokensUsed(), 800);
+    const max = maxRunTokens(); // Infinity by default in tests
+    assert.ok(!(totalTokensUsed() > max));
+    resetTelemetry();
+  });
+
+  test("liveness observations land in the run report and imply no kill", () => {
+    resetTelemetry();
+    beginRun("investigate");
+    recordLiveness({ agent: "worker", gapSec: 250, lastEvent: "tool_execution_start", lastTool: "bash" });
+    const report = reportOf("investigate");
+    assert.equal(report.livenessObservations.length, 1);
+    assert.equal(report.livenessObservations[0].gapSec, 250);
+    assert.equal(report.livenessObservations[0].lastTool, "bash");
+    resetTelemetry();
+  });
+});

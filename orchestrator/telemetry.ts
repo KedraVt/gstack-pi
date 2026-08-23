@@ -64,6 +64,7 @@ export function beginRun(workflowId: string): void {
     steps: [],
     liveness: [],
   };
+  tokensUsedTotal = 0;
 }
 
 /** Start accumulating a new run report unless one is already active for this workflow. */
@@ -130,6 +131,7 @@ export function writeRunReport(cwd: string, workflowId: string): string | null {
     const filePath = path.join(dir, runReportFileName(report.startedAt, workflowId));
     fs.writeFileSync(filePath, JSON.stringify(report, null, 2), "utf-8");
     current = null;
+    tokensUsedTotal = 0;
     return filePath;
   } catch {
     return null;
@@ -139,4 +141,18 @@ export function writeRunReport(cwd: string, workflowId: string): string | null {
 /** Test helper: drop any in-flight accumulator. */
 export function resetTelemetry(): void {
   current = null;
+}
+
+// --- Token budget circuit-breaker (STEP 5c) ----------------------------------
+
+let tokensUsedTotal = 0;
+
+/** Accumulate token usage (input + cacheRead + output) for the active run. */
+export function recordTokens(n: number): void {
+  tokensUsedTotal += n;
+}
+
+/** Cumulative tokens used since the last beginRun/flush. */
+export function totalTokensUsed(): number {
+  return tokensUsedTotal;
 }

@@ -49,3 +49,109 @@ export function optionalPhases(): OptionalPhasesMode {
 export function autoGateValidated(): boolean {
   return parse(process.env.GSTACK_PI_AUTO_GATE_VALIDATED) ?? false;
 }
+
+// --- Numeric configuration (STEP 5a / COR-06, COR-10) -------------------------
+
+const warnedOnce = new Set<string>();
+
+/**
+ * Parse a numeric env variable. Unset/empty → defaultValue. The literal
+ * "off" sentinel is only accepted when opts.allowOff is set. Invalid values
+ * fall back to defaultValue with a single warning per variable name.
+ */
+export function numberEnv(
+  name: string,
+  defaultValue: number,
+  opts?: { min?: number; allowOff?: boolean },
+): number | "off" {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  if (opts?.allowOff && raw.trim().toLowerCase() === "off") return "off";
+  const n = Number(raw);
+  const min = opts?.min;
+  if (!Number.isFinite(n) || n <= 0 || (min !== undefined && n < min)) {
+    if (!warnedOnce.has(name)) {
+      warnedOnce.add(name);
+      console.warn(`[gstack] invalid ${name}="${raw}" - falling back to default (${defaultValue})`);
+    }
+    return defaultValue;
+  }
+  return n;
+}
+
+export type TimeoutClass = "EXPLORE" | "WORK" | "VERIFY";
+
+/**
+ * Exhaustive phase-id → timeout-class map (STEP 5a). Every phase id of every
+ * registered workflow MUST appear here — a missing id silently falls back to
+ * the generic limit, which the cross-cutting test treats as a failure.
+ *
+ * Defaults (seconds, historical values NOT raised):
+ *   EXPLORE=900, WORK=1500, VERIFY=900; fallback GSTACK_PI_SUBAGENT_TIMEOUT=1200.
+ */
+const TIMEOUT_CLASS_MAP: Record<string, TimeoutClass> = {
+  // develop
+  "understand": "EXPLORE",
+  "explore": "EXPLORE",
+  "plan": "VERIFY",
+  "implement": "WORK",
+  "qa": "WORK",
+  "review": "VERIFY",
+  "ship": "VERIFY",
+  "document": "VERIFY",
+  "update-docs": "VERIFY",
+  // investigate
+  "reproduce": "WORK",
+  "root-cause": "WORK",
+  "fix": "WORK",
+  "verify": "VERIFY",
+  "regression-qa": "WORK",
+  // qa / qa-report
+  "setup": "EXPLORE",
+  "test": "VERIFY",
+  "report": "VERIFY",
+  // ship
+  "pre-checks": "VERIFY",
+  "push-pr": "VERIFY",
+  // review
+  "diff": "VERIFY",
+  "findings": "VERIFY",
+  // quick
+  "action": "WORK",
+};
+
+/** Resolve the timeout class of a phase id (null = unmapped). */
+export function timeoutClassFor(phaseId: string): TimeoutClass | null {
+  return TIMEOUT_CLASS_MAP[phaseId] ?? null;
+}
+
+/** Per-phase subagent timeout in milliseconds, resolved from the class envs. */
+export function subagentTimeoutFor(phaseId: string): number {
+  const cls = TIMEOUT_CLASS_MAP[phaseId];
+  let sec: number;
+  if (cls === "EXPLORE") sec = numberEnv("GSTACK_PI_TIMEOUT_EXPLORE", 900) as number;
+  else if (cls === "WORK") sec = numberEnv("GSTACK_PI_TIMEOUT_WORK", 1500) as number;
+  else if (cls === "VERIFY") sec = numberEnv("GSTACK_PI_TIMEOUT_VERIFY", 900) as number;
+  else sec = numberEnv("GSTACK_PI_SUBAGENT_TIMEOUT", 1200) as number;
+  return sec * 1000;
+}
+
+/**
+ * Observe-only liveness threshold in ms (STEP 5b). Default 240s; "off"
+ * disables the observation entirely. This NEVER terminates a process — it
+ * only feeds notifications and the run-report so a future kill decision can
+ * be made on real data.
+ */
+export function livenessThresholdMs(): number | "off" {
+  const sec = numberEnv("GSTACK_PI_LIVENESS_SEC", 240, { allowOff: true });
+  return sec === "off" ? "off" : sec * 1000;
+}
+
+/**
+ * Token circuit-breaker (STEP 5c / COR-22). No default = disabled. When set,
+ * an orderly chain stop triggers once the cumulative token usage of the run
+ * exceeds it.
+ */
+export function maxRunTokens(): number {
+  return numberEnv("GSTACK_PI_MAX_RUN_TOKENS", Number.POSITIVE_INFINITY) as number;
+}
