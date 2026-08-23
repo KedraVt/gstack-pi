@@ -235,7 +235,13 @@ function formatDelegationResults(
   parts.push("Review their outputs, then call gstack_advance with your summary. Do NOT redo the delegated work unless a result is clearly wrong or incomplete.");
   for (const { agent, result } of results) {
     parts.push("");
-    parts.push(`### Subagent: ${agent} — ${result.ok ? "completed" : "FAILED"} (${Math.round(result.durationMs / 1000)}s, ${result.toolCalls ?? "?"} tool calls)`);
+      const secs = Math.round(result.durationMs / 1000);
+      const turns = result.turns ?? 0;
+      const avgTurn = turns > 0 ? `${(result.durationMs / turns / 1000).toFixed(1)}s/turn` : "n/a";
+      const tok = result.usage
+        ? `tokens in ${result.usage.input} (cache ${result.usage.cacheRead}) out ${result.usage.output}`
+        : "tokens n/a";
+      parts.push(`### Subagent: ${agent} — ${result.ok ? "completed" : "FAILED"} (${secs}s · ${result.toolCalls ?? "?"} tool calls · ${turns} turns · ${avgTurn} · ${tok})`);
     if (result.ok) {
       parts.push(result.output || "(no textual output)");
     } else {

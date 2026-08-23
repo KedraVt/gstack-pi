@@ -102,6 +102,15 @@ export interface SpawnResult {
   durationMs: number;
   /** Number of tool calls the child executed — the real driver of wall time. */
   toolCalls?: number;
+  /** Assistant turns completed by the child. */
+  turns?: number;
+  /** Aggregate provider usage reported on assistant messages. */
+  usage?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
 }
 
 function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
@@ -251,12 +260,24 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
       });
 
       let buffer = "";
+      const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      let turns = 0;
       const processLine = (line: string) => {
         if (!line.trim()) return;
         try {
           const event = JSON.parse(line);
           if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
             collected.push(event.message);
+          }
+          if (event.type === "message_end" && event.message?.role === "assistant") {
+            turns++;
+            const u = event.message.usage;
+            if (u) {
+              usage.input += Number(u.input ?? u.inputTokens ?? 0) || 0;
+              usage.output += Number(u.output ?? u.outputTokens ?? 0) || 0;
+              usage.cacheRead += Number(u.cacheRead ?? u.cacheReadTokens ?? 0) || 0;
+              usage.cacheWrite += Number(u.cacheWrite ?? u.cacheWriteTokens ?? 0) || 0;
+            }
           }
           if (event?.type === 'tool_execution_start') toolCalls++;
           const label = activityLabelFromEvent(event);
@@ -343,6 +364,8 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
     return {
       ok: Boolean(rawOutput),
       output,
+      turns,
+      usage: { ...usage },
       error: rawOutput ? undefined : "Subagent produced no output.",
       exitCode,
       durationMs: Date.now() - started,

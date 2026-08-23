@@ -353,9 +353,7 @@ const PHASE_BOUNDARIES: Record<string, string> = {
     "EFFICIENCY DIRECTIVE: Check the completed-phase summaries first. If a confirmed root cause already emerged during reproduction, VALIDATE it quickly against the code (confirm mechanism + affected files) instead of re-investigating from scratch, then report. Only widen the investigation if validation fails.",
 };
 
-/** Generic efficiency preamble appended to every delegated task. */
-const EFFICIENCY_PREAMBLE =
-  "WORK EFFICIENTLY: wall-clock time matters. Prefer targeted greps and partial reads over exhaustive exploration; stop as soon as your deliverable is supported by evidence. Rough budget: <= 25 tool calls.\n\n";
+
 
 export function scopeBoundaryFor(phaseId: string): string {
   return PHASE_BOUNDARIES[phaseId] ?? "";
@@ -367,10 +365,10 @@ export function buildDeterministicPlan(phase: WorkflowPhase, ctx: WorkflowContex
   if (phase.chain && phase.chain.length > 0) {
     return phase.chain.map((step) => ({
       agent: step.agent,
-      task: EFFICIENCY_PREAMBLE + interpolate(buildTaskSkills(phase, step.task), ctx) + suffix,
+      task: interpolate(buildTaskSkills(phase, step.task), ctx) + suffix,
     }));
   }
-  return [{ agent: phase.agent ?? "worker", task: EFFICIENCY_PREAMBLE + interpolate(buildAgentTask(phase, ctx), ctx) + suffix }];
+  return [{ agent: phase.agent ?? "worker", task: interpolate(buildAgentTask(phase, ctx), ctx) + suffix }];
 }
 
 function interpolate(template: string, ctx: WorkflowContext): string {

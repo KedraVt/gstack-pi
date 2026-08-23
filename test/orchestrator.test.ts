@@ -363,13 +363,13 @@ test("root-cause phase tasks carry the validate-first directive", () => {
     assert.ok(plan[0].task.includes("Read it FIRST"), "plan-first instruction missing");
   });
 
-  test("every delegated task carries the efficiency preamble", () => {
+  test("no delegated task imposes an arbitrary tool-call budget", () => {
     for (const wfid of getWorkflowIds()) {
       const wf = getWorkflow(wfid)!;
       for (const phase of wf.phases) {
         if (phase.execution !== "subagent") continue;
         const plan = buildDeterministicPlan(phase, makeCtx(wfid, 0));
-        for (const step of plan) assert.ok(step.task.includes("WORK EFFICIENTLY"), `${wfid}/${phase.id}`);
+        for (const step of plan) assert.ok(!step.task.includes("tool calls"), `${wfid}/${phase.id}`);
       }
     }
   });
