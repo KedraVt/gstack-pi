@@ -153,6 +153,59 @@ function buildOrchestratorSkillBlock(phase: WorkflowPhase, ctx: WorkflowContext)
   return parts.length > 0 ? parts.join("\n") : null;
 }
 
+// Skill classes (efficiency plan §1c): how strictly a digest's output format
+// must be treated inside a subagent task.
+type SkillClass = "format-critical" | "support";
+const SKILL_CLASSES: Record<string, SkillClass> = {
+  "gstack-qa": "format-critical",
+  "gstack-review": "format-critical",
+  "gstack-investigate": "format-critical",
+  "grilling": "format-critical",
+  "gstack-document-generate": "format-critical",
+  "gstack-ship": "support",
+  "gstack-office-hours": "support",
+  "gstack-plan-eng-review": "support",
+  "gstack-document-release": "support",
+};
+export function skillClassFor(id: string): SkillClass {
+  return SKILL_CLASSES[id] ?? "format-critical";
+}
+const FORMAT_CRITICAL_PREFIX =
+  "This methodology's output format IS part of the deliverable: severity categories, gates and report structures are MANDATORY.";
+const SUPPORT_PREFIX = "Apply the parts useful to the deliverable; nothing more.";
+
+/**
+ * Deliverable-first contracts for MAIN-execution phases (path 2 of STEP 1).
+ * Every main-phase instruction ends with a falsifiable DELIVERABLE /
+ * STOP CONDITION pair so the model optimizes for the artifact, not the method.
+ */
+const MAIN_CONTRACTS: Record<string, (ctx: WorkflowContext) => string> = {
+  "understand": () =>
+    "## DELIVERABLE\nA shared-understanding summary: what exists today, what must change, and the chosen approach.\n\n## STOP CONDITION\nStop when: ambiguities are resolved with the user or explicitly listed as open questions.",
+  "plan": (c) =>
+    `## DELIVERABLE\nA converged plan file at \`${planFilePath(c.state.goal)}\` following the Plan file contract, briefly summarized to the user.\n\n## STOP CONDITION\nStop when: the interview frontier is empty (nothing silently assumed) and the plan file is written. Do NOT start implementing.`,
+  "reproduce": () =>
+    '## DELIVERABLE\nA reliable, deterministic way to trigger the bug + expected vs actual symptoms, ending with the trailing line `CONFIRMED ROOT CAUSE: <one-line cause> | files: <comma-separated file paths>` or `CONFIRMED ROOT CAUSE: none | files: none`.\n\n## STOP CONDITION\nStop when: the bug is reproduced AND the suspected cause is verified against the code (≤3 targeted reads), or a reliable reproduction exists without an obvious cause.',
+  "verify": () =>
+    "## DELIVERABLE\nFixed / not-fixed verdict with evidence (reproduction outcome + test results).\n\n## STOP CONDITION\nStop when: the original reproduction steps have been re-run and related tests have been executed.",
+  "setup": () =>
+    "## DELIVERABLE\nA concrete QA scope: target URL/dev server, user flows under test, and the test plan.\n\n## STOP CONDITION\nStop when: the test plan is defined and summarized.",
+  "report": () =>
+    "## DELIVERABLE\nA structured bug report: every finding with severity, repro steps, evidence reference, plus what passed and a fix-priority order.\n\n## STOP CONDITION\nStop when: all collected findings are compiled into the report.",
+  "pre-checks": () =>
+    "## DELIVERABLE\nA ready-to-ship verdict or an explicit blocker list (commits, tests, lint, TODOs, branch status).\n\n## STOP CONDITION\nStop when: every checklist item has been checked and reported.",
+  "findings": () =>
+    "## DELIVERABLE\nReview findings categorized by severity with file:line references and suggested fixes, plus an overall assessment.\n\n## STOP CONDITION\nStop when: the full diff analysis has been presented.",
+  "action": () =>
+    '## DELIVERABLE\nThe requested single action (QA / review / ship / investigate) completed, with its standard report.\n\n## STOP CONDITION\nStop when: the action\'s own deliverable is produced.',
+};
+
+function mainContractFor(phase: WorkflowPhase, ctx: WorkflowContext): string {
+  const builder = MAIN_CONTRACTS[phase.id];
+  if (builder) return builder(ctx);
+  return `## DELIVERABLE\nA clear, verifiable result for the "${phase.name}" phase, directly usable by the next phase.\n\n## STOP CONDITION\nStop when: the result can be checked against this description as done or not done. Further work is waste.`;
+}
+
 function buildMainInstructions(phase: WorkflowPhase, ctx: WorkflowContext): string {
   const templates: Record<string, (ctx: WorkflowContext) => string> = {
     "plan": (c) => [
@@ -247,14 +300,15 @@ function buildMainInstructions(phase: WorkflowPhase, ctx: WorkflowContext): stri
   };
 
   const builder = templates[phase.id];
-  if (builder) return builder(ctx);
-
-  return [
-    "### Instructions",
-    `Execute the "${phase.name}" phase for goal: "${ctx.state.goal}"`,
-    "Use available tools to accomplish this phase.",
-    "Focus on producing a clear, actionable result.",
-  ].join("\n");
+  const base = builder
+    ? builder(ctx)
+    : [
+        "### Instructions",
+        `Execute the "${phase.name}" phase for goal: "${ctx.state.goal}"`,
+        "Use available tools to accomplish this phase.",
+        "Focus on producing a clear, actionable result.",
+      ].join("\n");
+  return `${base}\n\n${mainContractFor(phase, ctx)}`;
 }
 
 function buildSubagentInstructions(phase: WorkflowPhase, ctx: WorkflowContext): string {
@@ -294,18 +348,153 @@ function buildSubagentInstructions(phase: WorkflowPhase, ctx: WorkflowContext): 
 }
 
 function buildAgentTask(phase: WorkflowPhase, ctx: WorkflowContext): string {
+  // Deliverable-first contracts (STEP 1): fixed 4-block order for every
+  // subagent task — DELIVERABLE / STOP CONDITION / CONTEXT / METHODOLOGY
+  // (methodology is appended last by buildTaskSkills).
   const tasks: Record<string, string> = {
-    "explore": `Explore the codebase relevant to this goal: {goal}.\n\nFind all code that matters: entry points, affected modules, existing patterns, architecture constraints, test infrastructure. Report file paths (absolute), key functions, patterns to follow, and anything surprising. Facts only — no design proposals.`,
-    "implement": `Implement the approved plan.\n\nThe full plan is in the file: {plan_file}. Read it FIRST and follow it — it contains the goal, scope, architecture, files to change, edge cases, and test strategy agreed with the user.\n\nContext from prior phases:\n{plan_summary}\n\nWrite production-quality code. Run tests after implementation. Report what was implemented, any deviations from the plan (and why), and any issues.`,
-    "qa": `QA test the following: {goal}.\n\nUse the gstack browser tools (gstack_goto, gstack_snapshot, gstack_click, gstack_screenshot, etc.) to test user flows. Take screenshots as evidence. Report all bugs found with severity.`,
-    "review": `Review the code changes for: {goal}.\n\nRun git diff to see changes. Check for: bugs, security issues, performance problems, style violations, missing tests. Report findings categorized by severity.`,
-    "ship": `Ship the current changes: {goal}.\n\n1. Ensure all changes are committed\n2. Push to remote\n3. Create a PR with a clear title and description\n4. Report the PR URL and any CI status`,
-    "fix": `Fix the issues found: {goal}.\n\nPrior findings:\n{findings_summary}\n\nApply minimal, targeted fixes. Run tests after each fix. Report what was fixed.`,
-    "test": `Run the full test suite for this project.\n\nIdentify the test command (package.json scripts, Makefile, etc.) and run it. Report: pass/fail counts, any failures with details.`,
-    "push-pr": `Push current branch and create a pull request.\n\nGoal context: {goal}\nPrior review summary: {review_summary}\n\n1. Push branch to remote\n2. Create PR via gh cli with title and body summarizing changes\n3. Report PR URL`,
-    "diff": `Analyze the git diff for this branch.\n\nRun: git diff main...HEAD (or appropriate base branch).\nReport: files changed, lines added/removed, summary of what each change does, any concerns.`,
-    "regression-qa": `Run regression QA after a bug fix: {goal}.\n\nUse browser tools to test adjacent functionality. Verify the fix didn't break other flows. Report findings.`,
-    "document": `Update the project documentation after this ship: {goal}.\n\n1. Analyze the branch diff against the base branch (git diff/log) and classify changes (new features / changed behavior / removed functionality)\n2. Discover all markdown docs (maxdepth 2, excluding .git/node_modules/.gstack)\n3. Build a Diataxis coverage map per changed area (tutorial / how-to / reference / explanation) and apply factual updates the diff dictates\n4. Where docs are missing entirely, research the code (read implementations end-to-end + tests) and write them following Diataxis; write reference docs first\n5. Sweep cross-doc consistency (versions, paths, counts, stale references)\n6. Commit doc updates as their own atomic commit with a docs: prefix\n7. Output the DOC REPORT block`,
+    "explore": `## DELIVERABLE
+Relevant files with absolute paths and line references, architectural patterns, constraints, and test infrastructure. Facts only — no design proposals.
+
+## STOP CONDITION
+Stop when: every area of the goal has at least one mapped file and the patterns/constraints are listed. Further exploration is waste.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+
+Find all code that matters: entry points, affected modules, existing patterns, architecture constraints, test infrastructure. Report file paths (absolute), key functions, patterns to follow, and anything surprising.`,
+    "implement": `## DELIVERABLE
+Code implementing the approved plan, a list of justified deviations (if any), and the tests you ran.
+
+## STOP CONDITION
+Stop when: the plan is implemented and tests are green.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+The full plan is in the file: {plan_file}. Read it FIRST and follow it — it contains the goal, scope, architecture, files to change, edge cases, and test strategy agreed with the user.
+Context from prior phases:
+{plan_summary}
+
+Write production-quality code. Run tests after implementation. Report what was implemented, any deviations from the plan (and why), and any issues.`,
+    "qa": `## DELIVERABLE
+For each goal-related flow: pass/fail verdict + screenshot evidence + severity (CRITICAL/HIGH/MEDIUM/LOW) per bug found, ending with the line \`COVERAGE: <tested flows>\`.
+
+## STOP CONDITION
+Stop when: the required flows are covered OR two passes produce no new findings. Deliverable flows are ALWAYS mandatory.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+
+Use the gstack browser tools (gstack_goto, gstack_snapshot, gstack_click, gstack_screenshot, etc.) to test user flows. Take screenshots as evidence. Report all bugs found with severity.`,
+    "review": `## DELIVERABLE
+Findings with severity + file:line + concrete failure scenario, a scope check, and a final verdict APPROVE or REQUEST_CHANGES.
+
+## STOP CONDITION
+Stop when: the full diff has been analyzed.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+
+Run git diff to see changes. Check for: bugs, security issues, performance problems, style violations, missing tests. Report findings categorized by severity.`,
+    "ship": `## DELIVERABLE
+Branch pushed, PR URL, TODOS.md updated, atomic commits verified.
+
+## STOP CONDITION
+Stop when: the ship checklist is complete.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+
+1. Ensure all changes are committed
+2. Push to remote
+3. Create a PR with a clear title and description
+4. Report the PR URL and any CI status`,
+    "fix": `## DELIVERABLE
+Minimal fixes applied for the findings below, tests green, regression coverage for CRITICAL/HIGH findings.
+
+## STOP CONDITION
+Stop when: all findings are addressed.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+Prior findings:
+{findings_summary}
+
+Apply minimal, targeted fixes. Run tests after each fix. Report what was fixed.`,
+    "test": `## DELIVERABLE
+Test commands identified + pass/fail counts + failure details.
+
+## STOP CONDITION
+Stop when: the suite has completed.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+
+Identify the test command (package.json scripts, Makefile, etc.) and run it.`,
+    "push-pr": `## DELIVERABLE
+PR URL + CI status.
+
+## STOP CONDITION
+Stop when: the PR is created.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+Prior review summary: {review_summary}
+
+1. Push branch to remote
+2. Create PR via gh cli with title and body summarizing changes
+3. Report PR URL`,
+    "diff": `## DELIVERABLE
+Files changed, lines added/removed, a summary of what each change does per area, and any concerns.
+
+## STOP CONDITION
+Stop when: the full diff analysis is complete.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+
+Run: git diff main...HEAD (or appropriate base branch).`,
+    "regression-qa": `## DELIVERABLE
+Pass/fail + screenshot evidence + severity (CRITICAL/HIGH/MEDIUM/LOW) for each adjacent flow tested, ending with the line \`COVERAGE: <tested flows>\`.
+
+## STOP CONDITION
+Stop when: the required adjacent flows are covered OR two passes produce no new findings.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+
+Use browser tools to test adjacent functionality. Verify the fix didn't break other flows.`,
+    "document": `## DELIVERABLE
+A DOC REPORT block (files reviewed, updated, generated, remaining gaps) plus doc updates committed as their own atomic commit.
+
+## STOP CONDITION
+Stop when: every changed area has a Diataxis classification and the dictated factual updates are committed.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+
+1. Analyze the branch diff against the base branch (git diff/log) and classify changes (new features / changed behavior / removed functionality)
+2. Discover all markdown docs (maxdepth 2, excluding .git/node_modules/.gstack)
+3. Build a Diataxis coverage map per changed area (tutorial / how-to / reference / explanation) and apply factual updates the diff dictates
+4. Where docs are missing entirely, research the code (read implementations end-to-end + tests) and write them following Diataxis; write reference docs first
+5. Sweep cross-doc consistency (versions, paths, counts, stale references)
+6. Commit doc updates as their own atomic commit with a docs: prefix
+7. Output the DOC REPORT block`,
+    "update-docs": `## DELIVERABLE
+A DOC REPORT block (files reviewed, updated, generated, remaining gaps) plus doc updates committed as their own atomic commit.
+
+## STOP CONDITION
+Stop when: every changed area has a Diataxis classification and the dictated factual updates are committed.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+
+1. Analyze the branch diff against the base branch (git diff/log) and classify changes (new features / changed behavior / removed functionality)
+2. Discover all markdown docs (maxdepth 2, excluding .git/node_modules/.gstack)
+3. Build a Diataxis coverage map per changed area (tutorial / how-to / reference / explanation) and apply factual updates the diff dictates
+4. Where docs are missing entirely, research the code (read implementations end-to-end + tests) and write them following Diataxis; write reference docs first
+5. Sweep cross-doc consistency (versions, paths, counts, stale references)
+6. Commit doc updates as their own atomic commit with a docs: prefix
+7. Output the DOC REPORT block`,
   };
 
   let task = tasks[phase.id] ?? `Execute the "${phase.name}" phase for: {goal}. Use available tools and report results.`;
@@ -326,14 +515,19 @@ function buildTaskSkills(phase: WorkflowPhase, task: string): string {
   for (const id of phase.skills) {
     const digest = loadSkillDigest(id);
     const info = getSkillInfo(id);
+    // Per-skill class prefix (STEP 1c): format-critical digests are part of
+    // the deliverable; support digests are applied only as useful.
+    const prefix = skillClassFor(id) === "format-critical" ? FORMAT_CRITICAL_PREFIX : SUPPORT_PREFIX;
     if (digest) {
-      blocks.push(`## Skill methodology: ${id} (follow it; its output format is mandatory)\n\n${digest}`);
+      blocks.push(`## Skill methodology: ${id} (${skillClassFor(id)})\n${prefix}\n\n${digest}`);
     } else if (info?.fullPath) {
-      blocks.push(`## Skill methodology: ${id}\nBefore starting, read the file ${info.fullPath} and follow its methodology.`);
+      blocks.push(`## Skill methodology: ${id} (${skillClassFor(id)})\n${prefix}\nBefore starting, read the file ${info.fullPath} and follow its methodology.`);
     }
   }
   if (blocks.length === 0) return task;
-  return `${blocks.join("\n\n---\n\n")}\n\n---\n\n${task}`;
+  // Fixed 4-block order: the task (DELIVERABLE / STOP CONDITION / CONTEXT)
+  // comes FIRST, the METHODOLOGY block LAST.
+  return `${task}\n\n---\n\n## METHODOLOGY\n\n${blocks.join("\n\n---\n\n")}`;
 }
 
 /**

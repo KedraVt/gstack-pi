@@ -580,3 +580,94 @@ describe("run-report telemetry", () => {
     assert.ok(name.endsWith("-investigate.json"));
   });
 });
+
+// --- STEP 1: deliverable-first contracts + language audit --------------------
+
+describe("deliverable-first contracts (STEP 1)", () => {
+  const ITALIAN_STOPLIST = ["fase", "trova", "leggi", "scrivi", "deve", "sempre", "perché", "delle", "degli", "questo"];
+
+  function injectableStrings(): string[] {
+    const out: string[] = [];
+    for (const wf of getAllWorkflows()) {
+      let idx = 0;
+      for (const phase of wf.phases) {
+        const ctx = makeCtx(wf.id, idx++);
+        if (phase.execution === "subagent") {
+          for (const step of buildDeterministicPlan(phase, ctx)) out.push(step.task);
+        } else {
+          out.push(buildPhaseInstructions(phase, ctx));
+        }
+      }
+    }
+    for (const id of getSkillIds()) {
+      const digest = loadSkillDigest(id);
+      if (digest) out.push(digest);
+    }
+    return out;
+  }
+
+  test("every phase on every path carries DELIVERABLE and STOP CONDITION", () => {
+    for (const wf of getAllWorkflows()) {
+      let idx = 0;
+      for (const phase of wf.phases) {
+        const ctx = makeCtx(wf.id, idx++);
+        if (phase.execution === "subagent") {
+          const plan = buildDeterministicPlan(phase, ctx);
+          assert.ok(plan.length > 0, `${wf.id}/${phase.id} produced an empty plan`);
+          for (const step of plan) {
+            assert.ok(step.task.includes("## DELIVERABLE"), `${wf.id}/${phase.id} (${step.agent}) task missing DELIVERABLE`);
+            assert.ok(step.task.includes("## STOP CONDITION"), `${wf.id}/${phase.id} (${step.agent}) task missing STOP CONDITION`);
+          }
+        } else {
+          const instructions = buildPhaseInstructions(phase, ctx);
+          assert.ok(instructions.includes("## DELIVERABLE"), `${wf.id}/${phase.id} main instructions missing DELIVERABLE`);
+          assert.ok(instructions.includes("## STOP CONDITION"), `${wf.id}/${phase.id} main instructions missing STOP CONDITION`);
+        }
+      }
+    }
+  });
+
+  test("methodology blocks carry the correct class prefix and follow the deliverable", () => {
+    const qa = findPhase("develop", "qa");
+    const qaPlan = buildDeterministicPlan(qa, makeCtx("develop", 4));
+    assert.ok(qaPlan[0].task.includes("Skill methodology: gstack-qa (format-critical)"), "qa should be format-critical");
+    assert.ok(
+      qaPlan[0].task.includes("output format IS part of the deliverable"),
+      "format-critical prefix missing",
+    );
+    assert.ok(
+      qaPlan[0].task.indexOf("## DELIVERABLE") < qaPlan[0].task.indexOf("## METHODOLOGY"),
+      "methodology must come after the deliverable",
+    );
+
+    const pushPr = findPhase("ship", "push-pr");
+    const shipPlan = buildDeterministicPlan(pushPr, makeCtx("ship", 4));
+    assert.ok(shipPlan[0].task.includes("Skill methodology: gstack-ship (support)"), "ship should be support-class");
+    assert.ok(shipPlan[0].task.includes("Apply the parts useful to the deliverable"), "support prefix missing");
+  });
+
+  test("update-docs resolves to the real doc contract instead of the generic fallback", () => {
+    const updateDocs = findPhase("ship", "update-docs");
+    const plan = buildDeterministicPlan(updateDocs, makeCtx("ship", 4));
+    assert.equal(plan.length, 1);
+    assert.ok(plan[0].task.includes("Diataxis coverage map"), "generic fallback leaked through for update-docs");
+    assert.ok(plan[0].task.includes("DOC REPORT"));
+    assert.ok(plan[0].task.includes("docs: prefix"));
+  });
+
+  test("language audit: zero non-English content in injectable strings", () => {
+    for (const s of injectableStrings()) {
+      const lower = s.toLowerCase();
+      for (const word of ITALIAN_STOPLIST) {
+        assert.ok(
+          !new RegExp(`\\b${word}\\b`).test(lower),
+          `Italian stoplist word "${word}" found in: ${s.slice(0, 140).replace(/\s+/g, " ")}...`,
+        );
+      }
+      assert.ok(
+        !/[àèéìòù]/i.test(s),
+        `accented letter found in: ${s.slice(0, 140).replace(/\s+/g, " ")}...`,
+      );
+    }
+  });
+});

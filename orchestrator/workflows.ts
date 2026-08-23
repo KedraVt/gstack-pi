@@ -98,8 +98,8 @@ const investigate: Workflow = {
       name: "Root Cause Analysis",
       execution: "subagent",
       chain: [
-        { agent: "scout", task: "Find all code related to this bug: {goal}. Reproduction context: {reproduce_summary}. Report suspicious code paths, recent changes (git log), and likely culprits." },
-        { agent: "planner", task: "Given this investigation context, identify the root cause and propose a minimal fix strategy: {previous}. Output: root cause, fix approach, files to change, regression risks." },
+        { agent: "scout", task: "## DELIVERABLE\nSuspicious code paths, recent changes (git log), and likely culprits related to the bug — each with file references.\n\n## STOP CONDITION\nStop when: all code plausibly involved in the reported symptom has been identified. Further exploration is waste.\n\n## CONTEXT\nBug: {goal} | Branch: {branch}\nReproduction context: {reproduce_summary}\n\nFind all code related to this bug and report suspicious code paths, recent changes (git log), and likely culprits." },
+        { agent: "planner", task: "## DELIVERABLE\nRoot cause + minimal fix strategy: mechanism with file:line references, files to change, regression risks.\n\n## STOP CONDITION\nStop when: the root-cause mechanism is pinned to specific file:line locations and the fix strategy follows from it.\n\n## CONTEXT\nBug: {goal} | Branch: {branch}\nInvestigation context from the prior specialist:\n{previous}\n\nGiven this investigation context, identify the root cause and propose a minimal fix strategy. Output: root cause, fix approach, files to change, regression risks." },
       ],
       optional: false,
       skills: ["gstack-investigate"],
