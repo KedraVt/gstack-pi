@@ -6,6 +6,12 @@
  * subagent output, repo content) silently corrupts the surrounding template.
  * Using a function replacement makes the value literal.
  */
-export function replaceExact(t: string, token: RegExp, value: string): string {
-  return t.replace(token, () => value);
+export function replaceExact(
+  t: string,
+  token: RegExp,
+  value: string | ((...args: any[]) => string),
+): string {
+  const repl =
+    typeof value === "function" ? (value as any) : () => value; // function form = literal
+  return t.replace(token, repl);
 }

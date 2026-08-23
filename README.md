@@ -357,3 +357,19 @@ Therefore:
 - VERIFIED FACTS are context, not proof: agent directives (see `AGENTS_NOTES.md`) instruct specialists to re-check claims that are load-bearing for code changes they are about to make.
 - `$`-safe interpolation everywhere (`replaceExact`, orchestrator/text.ts): untrusted text containing `$&`, `` $` ``, `$'` or `$1` can never alter task structure.
 - Liveness observation never terminates processes; kills remain a manual, data-driven decision.
+
+## Troubleshooting
+
+**Phase advanced but nothing happens / pi exited unexpectedly.**
+
+The deterministic delegation runs as a fire-and-forget background chain. Diagnose in this order:
+
+1. **Session breadcrumbs** — every delegation milestone is persisted as a `gstack-delegation-event` session entry (`started`, `retrying`, `completed`, `failed`, `timeout`, `budget-exceeded`, `interrupted`). A `started` with no terminal event followed by an `interrupted` annotation means the host died mid-delegation (crash or restart).
+2. **Debug log** — set `GSTACK_PI_DEBUG=<file>` before launching pi; every spawn attempt, pid, timeout, abort and provider error is appended there.
+3. **Run reports** — `.gstack/runs/<ISO>-<workflow>.json` carries per-step durations, tool calls, token usage, handoff levels and liveness observations.
+
+**Subagent fails fast with a provider error.** Errors like `Provider finish_reason: network_error` surface in the delegation summary and the failure event. pi auto-retries internally (3 attempts); the orchestrator adds one chain-level retry. If the provider outage persists, switch models (`--model`) and re-run. This is a provider problem, not an orchestrator bug.
+
+**Type safety.** `bun run typecheck` (tsc --noEmit) gates the exact crash class from 2026-08-23 (a function used but never imported — a runtime `ReferenceError` thrown from a timer callback that killed pi; bundlers don't type-check). It also runs as part of `bun test`.
+
+**Real-spawn end-to-end test.** `GSTACK_PI_E2E_SPAWN=1 bun test test/orchestrator.test.ts` spawns a real `pi -p` child through the production `runSubagent` path (opt-in because it needs a healthy provider and takes ~30-60s).

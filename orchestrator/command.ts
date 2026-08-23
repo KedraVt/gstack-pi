@@ -6,10 +6,15 @@ import { launchPhase } from "./executor.ts";
 import type { GitContext } from "./types.ts";
 
 export function getCompletions(prefix: string) {
-  const verbs = ["next"].map((v) => ({ label: v, detail: "Approve the gated phase and continue" }));
+  // AutocompleteItem shape: { value, label, description? }
+  const verbs = ["next"].map((v) => ({
+    value: v,
+    label: v,
+    description: "Approve the gated phase and continue",
+  }));
   const wf = getAllWorkflows()
     .filter((w) => w.id.startsWith(prefix.toLowerCase()))
-    .map((w) => ({ label: w.id, detail: w.description }));
+    .map((w) => ({ value: w.id, label: w.id, description: w.description }));
   return [...wf, ...verbs];
 }
 

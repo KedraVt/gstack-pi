@@ -5,7 +5,7 @@ import { saveState, advancePhase, gateForApproval } from "./state.ts";
 import { buildPhaseInstructions, buildDeterministicPlan } from "./templates.ts";
 import { detectGitContext } from "./git.ts";
 import { runSubagent, type SpawnRequest, type SpawnResult, defaultTimeoutMs } from "./spawn.ts";
-import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens } from "./config.ts";
+import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens, delegationBudgetMs } from "./config.ts";
 import { ensureRun, recordDelegatedStep, writeRunReport, recordLiveness, recordTokens, totalTokensUsed } from "./telemetry.ts";
 import { extractHandoff } from "./handoff.ts";
 import { isRefutedStrategy } from "./skip.ts";
@@ -13,8 +13,12 @@ import { replaceExact } from "./text.ts";
 
 // --- Sequential-chain resilience (STEP 2f) -----------------------------------
 
-/** Delay before the single allowed retry of a transient chain-step failure. */
+/** Delay before the single allowed retry of a transient chain-step failure.
+ * Timeouts get a long cooldown (give the provider room to recover); fast
+ * failures are usually transient provider hiccups — retry quickly instead of
+ * burning 30s on every blip. */
 export const RETRY_DELAY_MS = 30_000;
+export const FAST_RETRY_DELAY_MS = 5_000;
 
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -23,7 +27,7 @@ export function delay(ms: number): Promise<void> {
 /**
  * Transient failures may recover on a single retry: timeout, abort, or a
  * non-zero exit without any output. Configuration errors (unknown agent,
- * bad setup) are HARD and propagate immediately.
+ * spawn ENOENT, bad setup) are HARD and propagate immediately.
  */
 export function isTransientFailure(result: SpawnResult): boolean {
   if (result.ok) return false;
@@ -33,12 +37,18 @@ export function isTransientFailure(result: SpawnResult): boolean {
 }
 
 /**
- * Decision for attempt N (1-based). At most one retry is allowed and it runs
- * with a +50% timeout limit.
+ * Decision for attempt N (1-based). At most one retry is allowed; it runs
+ * with a +50% timeout limit and a failure-class-dependent cooldown.
  */
-export function retryDecision(result: SpawnResult, attempt: number): { retry: boolean; timeoutScale: number } {
-  if (attempt >= 2 || !isTransientFailure(result)) return { retry: false, timeoutScale: 1 };
-  return { retry: true, timeoutScale: 1.5 };
+export function retryDecision(result: SpawnResult, attempt: number): { retry: boolean; timeoutScale: number; delayMs: number } {
+  if (attempt >= 2 || !isTransientFailure(result)) {
+    return { retry: false, timeoutScale: 1, delayMs: 0 };
+  }
+  return {
+    retry: true,
+    timeoutScale: 1.5,
+    delayMs: result.timedOut ? RETRY_DELAY_MS : FAST_RETRY_DELAY_MS,
+  };
 }
 
 // --- Runtime liveness -------------------------------------------------------
@@ -66,6 +76,48 @@ export function ctxAlive(ctx: unknown): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Persistent breadcrumb for delegation milestones. Written as a session
+ * entry so progress and failures survive crashes and exports — the field
+ * lesson from the 2026-08-23 incident was total silence between the advance
+ * and the host crash. Best-effort by design: telemetry must never kill the
+ * chain (and every callback that could throw is guarded at its source).
+ */
+function delegationEvent(pi: ExtensionAPI, data: Record<string, unknown>): void {
+  try {
+    pi.appendEntry("gstack-delegation-event", { at: new Date().toISOString(), ...data });
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Crash forensics: if a previous run died mid-delegation (host killed by an
+ * uncaught exception), the last delegation event never reached a terminal
+ * state. Annotate it so the restart has an explicit trail instead of silence.
+ */
+export function annotateOrphanedDelegation(pi: ExtensionAPI, ctx: ExtensionContext): void {
+  try {
+    const entries = ((ctx.sessionManager as any)?.getEntries?.() ?? []) as any[];
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e?.type === "custom" && e.customType === "gstack-delegation-event") {
+        if (e.data?.event === "started" || e.data?.event === "retrying") {
+          delegationEvent(pi, {
+            phaseId: e.data.phaseId,
+            agent: e.data.agent,
+            event: "interrupted",
+            detail: "previous run ended mid-delegation (host restart?)",
+          });
+        }
+        break;
+      }
+    }
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -116,6 +168,9 @@ export async function executeCurrentPhase(
   }
   // STEP 0 telemetry: make sure this run is being accumulated.
   ensureRun(state.workflowId);
+  // Crash forensics: annotate a delegation that never reached a terminal
+  // event in the previous run (host died mid-flight).
+  annotateOrphanedDelegation(pi, ctx);
 
   const phase = workflow.phases[state.phaseIndex];
   if (!phase) {
@@ -189,7 +244,7 @@ export async function executeCurrentPhase(
   // `subagent` tool — it happens by construction.
   let delegationPrefix = "";
   if (deterministicSubagents() && phase.execution === "subagent") {
-    const results = await runDeterministicDelegation(phase, wfCtx, ctx, alive);
+    const results = await runDeterministicDelegation(phase, wfCtx, ctx, alive, pi);
     if (!alive()) return;
     // STEP 0 telemetry: persist per-step measurements (persistence only —
     // every number already exists on SpawnResult).
@@ -253,12 +308,18 @@ async function runDeterministicDelegation(
   wfCtx: WorkflowContext,
   ctx: ExtensionContext,
   alive: () => boolean,
+  pi: ExtensionAPI,
 ): Promise<Array<{ agent: string; result: SpawnResult }>> {
   const plan = buildDeterministicPlan(phase as any, wfCtx);
   // STEP 4d: a collapsed validate-only root-cause step may be REFUTED — then
   // the FULL original scout→planner chain is rebuilt and re-run.
   const wasCollapsed =
     phase.id === "root-cause" && plan.length === 1 && plan[0].agent === "planner";
+
+  // Wall-clock guard (STEP D3): one phase's whole delegation must never hang
+  // forever — past the budget the chain stops orderly with a visible trail.
+  const budget = delegationBudgetMs();
+  const delegationStart = Date.now();
 
   const runSteps = async (
     steps: Array<{ agent: string; task: string }>,
@@ -268,6 +329,24 @@ async function runDeterministicDelegation(
     let prevIncomplete = false;
     for (const [index, step] of steps.entries()) {
       if (!alive()) break; // session reloaded mid-chain — stop spawning work
+      if (budget !== "off" && Date.now() - delegationStart > budget) {
+        delegationEvent(pi, {
+          phaseId: phase.id,
+          step: index,
+          agent: step.agent,
+          event: "budget-exceeded",
+          budgetSec: Math.round((budget as number) / 1000),
+        });
+        try {
+          ctx.ui.notify(
+            `gstack: delegation wall-clock budget (${Math.round((budget as number) / 1000)}s) exhausted — stopping phase "${phase.id}" before "${step.agent}".`,
+            "warning",
+          );
+        } catch {
+          /* stale ctx */
+        }
+        break;
+      }
       // STEP 2c: the receiver gets the extracted HANDOFF (computed on the RAW
       // uncapped upstream output), never the entire report — a full 50K-char
       // payload inflated every downstream turn's prefill and encouraged
@@ -317,19 +396,29 @@ async function runDeterministicDelegation(
           }
         },
       };
-      // STEP 2f: at most one retry for transient failures, with a +50% timeout.
+      delegationEvent(pi, { phaseId: phase.id, step: index, agent: step.agent, event: "started" });
+      // STEP 2f/4d: at most one retry for transient failures; the cooldown
+      // depends on the failure class (timeout → long, fast blip → short).
       let result = await runSubagent(req);
       const decision = retryDecision(result, 1);
       if (decision.retry && alive()) {
+        delegationEvent(pi, {
+          phaseId: phase.id,
+          step: index,
+          agent: step.agent,
+          event: "retrying",
+          reason: result.timedOut ? "timeout" : `exit ${result.exitCode}`,
+          delaySec: Math.round(decision.delayMs / 1000),
+        });
         try {
           ctx.ui.notify(
-            `gstack: subagent "${step.agent}" failed transiently (${result.timedOut ? "timeout" : `exit ${result.exitCode}`}) — retrying once in 30s with a raised limit…`,
+            `gstack: subagent "${step.agent}" failed transiently (${result.timedOut ? "timeout" : `exit ${result.exitCode}`}) — retrying once in ${Math.round(decision.delayMs / 1000)}s with a raised limit…`,
             "warning",
           );
         } catch {
           /* stale ctx */
         }
-        await delay(RETRY_DELAY_MS);
+        await delay(decision.delayMs);
         if (alive()) {
           result = await runSubagent({
             ...req,
@@ -338,6 +427,17 @@ async function runDeterministicDelegation(
         }
       }
       out.push({ agent: step.agent, result });
+      delegationEvent(pi, {
+        phaseId: phase.id,
+        step: index,
+        agent: step.agent,
+        event: result.ok ? "completed" : result.timedOut ? "timeout" : "failed",
+        durationSec: Math.round(result.durationMs / 1000),
+        toolCalls: result.toolCalls,
+        turns: result.turns,
+        incomplete: result.incomplete === true || undefined,
+        error: result.error ? String(result.error).slice(0, 300) : undefined,
+      });
       previous = result.rawOutput ?? (result.output || result.error || "");
       prevIncomplete = !result.ok || result.incomplete === true;
       // STEP 5c: token budget circuit-breaker — notify + orderly stop, no kill.

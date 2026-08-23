@@ -155,3 +155,14 @@ export function livenessThresholdMs(): number | "off" {
 export function maxRunTokens(): number {
   return numberEnv("GSTACK_PI_MAX_RUN_TOKENS", Number.POSITIVE_INFINITY) as number;
 }
+
+/**
+ * Wall-clock budget for ONE phase's whole deterministic delegation (all steps
+ * + retries). Guards against pathological hangs: past the budget the chain
+ * stops orderly with an explicit outcome instead of hanging forever. Default
+ * 45 min; "off" disables.
+ */
+export function delegationBudgetMs(): number | "off" {
+  const sec = numberEnv("GSTACK_PI_DELEGATION_BUDGET_SEC", 2700, { allowOff: true });
+  return sec === "off" ? "off" : sec * 1000;
+}

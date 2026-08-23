@@ -48,7 +48,7 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       summary: Type.String({ description: "2-3 sentence summary of what was accomplished in this phase" }),
       status: Type.Union([Type.Literal("completed"), Type.Literal("failed")], { description: "Whether the phase succeeded or failed" }),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext): Promise<any> {
       const state = loadActiveState(ctx);
       if (!state) {
         return { content: [{ type: "text" as const, text: "No active gstack workflow. Start one with /gstack." }] };
@@ -154,7 +154,7 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       workflow: Type.String({ description: "Workflow id: develop | investigate | qa | qa-report | ship | review | quick" }),
       goal: Type.String({ description: "What the workflow should accomplish" }),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext): Promise<any> {
       const existing = loadActiveState(ctx);
       if (existing) {
         return {

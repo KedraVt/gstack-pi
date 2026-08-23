@@ -102,7 +102,9 @@ export function runBrowse(
   args: string[],
   opts: { signal?: AbortSignal; timeoutMs?: number; binaryPath?: string } = {},
 ): Promise<RunResult> {
-  const bin = opts.binaryPath ?? resolveBinary();
+  const bin = opts.binaryPath
+    ? { path: opts.binaryPath }
+    : (resolveBinary() as { path: string; error?: undefined } | { error: string; path?: undefined });
   if ("error" in bin) {
     return Promise.resolve({
       stdout: "",

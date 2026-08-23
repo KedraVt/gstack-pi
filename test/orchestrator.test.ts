@@ -11,6 +11,7 @@ import { buildPhaseInstructions, buildDeterministicPlan, planFilePath } from "..
 import type { WorkflowContext, WorkflowPhase } from "../orchestrator/types.ts";
 import { launchPhase, ctxAlive } from "../orchestrator/executor.ts";
 import { activityLabelFromEvent } from "../orchestrator/spawn.ts";
+import { runSubagent, resolveTimeoutMs } from "../orchestrator/spawn.ts";
 import {
   beginRun,
   ensureRun,
@@ -676,7 +677,7 @@ describe("deliverable-first contracts (STEP 1)", () => {
 
 import { extractHandoff } from "../orchestrator/handoff.ts";
 import { replaceExact } from "../orchestrator/text.ts";
-import { isTransientFailure, retryDecision, RETRY_DELAY_MS } from "../orchestrator/executor.ts";
+import { isTransientFailure, retryDecision, RETRY_DELAY_MS, FAST_RETRY_DELAY_MS } from "../orchestrator/executor.ts";
 import { optionalPhases } from "../orchestrator/config.ts";
 
 function bigReport(handoffSection?: string): string {
@@ -777,12 +778,13 @@ describe("chain retry policy (STEP 2f)", () => {
   const configError: any = { ok: false, output: "", error: 'Unknown agent "nope".', exitCode: 1, durationMs: 0, configError: true };
 
   test("transient failures are retried once with a +50% timeout; hard failures are not", () => {
-    assert.deepEqual(retryDecision(timeoutResult, 1), { retry: true, timeoutScale: 1.5 });
-    assert.deepEqual(retryDecision(exitFailNoOutput, 1), { retry: true, timeoutScale: 1.5 });
-    assert.deepEqual(retryDecision(okResult, 1), { retry: false, timeoutScale: 1 });
-    assert.deepEqual(retryDecision(configError, 1), { retry: false, timeoutScale: 1 });
-    assert.deepEqual(retryDecision(timeoutResult, 2), { retry: false, timeoutScale: 1 }, "at most one retry");
+    assert.deepEqual(retryDecision(timeoutResult, 1), { retry: true, timeoutScale: 1.5, delayMs: RETRY_DELAY_MS });
+    assert.deepEqual(retryDecision(exitFailNoOutput, 1), { retry: true, timeoutScale: 1.5, delayMs: FAST_RETRY_DELAY_MS });
+    assert.deepEqual(retryDecision(okResult, 1), { retry: false, timeoutScale: 1, delayMs: 0 });
+    assert.deepEqual(retryDecision(configError, 1), { retry: false, timeoutScale: 1, delayMs: 0 });
+    assert.deepEqual(retryDecision(timeoutResult, 2), { retry: false, timeoutScale: 1, delayMs: 0 }, "at most one retry");
     assert.equal(RETRY_DELAY_MS, 30_000);
+    assert.equal(FAST_RETRY_DELAY_MS, 5_000);
     assert.equal(isTransientFailure(configError), false);
     assert.equal(isTransientFailure(timeoutResult), true);
   });
@@ -1099,5 +1101,92 @@ describe("token circuit-breaker + liveness recording (STEP 5b/5c)", () => {
     assert.equal(report.livenessObservations[0].gapSec, 250);
     assert.equal(report.livenessObservations[0].lastTool, "bash");
     resetTelemetry();
+  });
+});
+
+// --- CRASH REGRESSION: real spawn path (2026-08-23 field incident) ----------
+// The pi process died with "ReferenceError: livenessThresholdMs is not defined"
+// thrown from the abort-poll setInterval callback 1s into the retry.
+// These tests execute the REAL runSubagent spawn path (agentDef bypasses
+// agent discovery, so no ~/.pi/agent/agents lookup is needed) and would have
+// caught the missing-import + nested-scope bugs.
+
+describe("runSubagent real spawn path (crash regression)", () => {
+  const MINIMAL_AGENT = {
+    name: "regression-agent",
+    description: "minimal inline test agent",
+    systemPrompt: "You are a minimal test assistant. Reply with exactly the single word PONG and nothing else.",
+    tools: [],
+    filePath: "inline",
+  };
+
+  const PONG_TIMEOUT = 120_000; // generous for a 10-20s real pi boot
+
+  function resolveCliPath(): string | null {
+    // Mirrors npm global layout: <prefix>/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+    const prefixes = [
+      path.join(os.homedir(), "AppData", "Roaming", "npm"),
+      path.join(os.homedir(), ".npm-global"),
+    ];
+    for (const prefix of prefixes) {
+      const candidate = path.join(prefix, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
+      if (existsSync(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  // Opt-in end-to-end: pi's CLI boots slower under `bun test` than the 30s
+  // command budget allows reliably, so this runs only when explicitly
+  // requested via GSTACK_PI_E2E_SPAWN=1. The crash-class regressions
+  // (missing import, nested-scope ReferenceError) are fully covered by the
+  // typecheck gate + the pure unit tests in this suite; this test guards
+  // the RUNTIME path additionally.
+  if (process.env.GSTACK_PI_E2E_SPAWN === "1") {
+    test("spawns a real child, parses output, resolves without ReferenceErrors",
+      { timeout: 300_000 },
+      async () => {
+        const cliPath = resolveCliPath();
+        assert.ok(cliPath, "pi CLI not found in expected npm global locations");
+        const tmpCwd = mkdtempSync(path.join(os.tmpdir(), "gstack-e2e-"));
+        const result = await runSubagent({
+          agent: "regression-agent",
+          agentDef: MINIMAL_AGENT,
+          task: "Reply with the single word PONG.",
+          cwd: tmpCwd,
+          phaseId: "explore", // exercises subagentTimeoutFor + class timeout
+          timeoutMs: PONG_TIMEOUT,
+          scriptOverride: cliPath,
+          execPathOverride: "node", // bun test must not host the pi CLI
+          onLiveness: (obs) => {
+            assert.fail(`liveness fired unexpectedly: ${JSON.stringify(obs)}`);
+          },
+        });
+        try {
+          rmSync(tmpCwd, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+        assert.equal(result.timedOut, undefined, `unexpected timeout label: ${JSON.stringify(result)}`);
+        assert.ok(
+          result.output.length > 0,
+          `expected output, got: ${JSON.stringify(result)} — NOTE: an empty result with a provider error in 'error' means the configured model/provider is currently failing (observed in the wild: "Provider finish_reason: network_error" on 9router); that is NOT an orchestrator bug. Point pi at a healthy provider and re-run.`,
+        );
+      });
+  }
+
+  test("resolveTimeoutMs maps phaseId to the class timeout and honors overrides", () => {
+    assert.equal(resolveTimeoutMs({ phaseId: "implement" }), 1500 * 1000);
+    assert.equal(resolveTimeoutMs({ timeoutMs: 1234 }), 1234);
+  });
+
+  test("unknown agent (no agentDef) is a hard config error, never retried", async () => {
+    const result = await runSubagent({
+      agent: "this-agent-does-not-exist",
+      task: "x",
+      cwd: process.cwd(),
+      timeoutMs: 1000,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.configError, true);
   });
 });
