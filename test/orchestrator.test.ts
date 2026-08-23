@@ -336,12 +336,42 @@ describe("plan cycle (interactive, hybrid)", () => {
     assert.ok(instructions.includes("Do NOT start implementing"));
   });
 
+// --- Phase scope boundaries (session-debug 2026-08-22: reproduce drifted into root-causing) ---
+
+test("reproduce phase tasks carry a reproduction-only scope boundary", () => {
+  const wf = getWorkflow("investigate")!;
+  const reproduce = wf.phases.find((p) => p.id === "reproduce")!;
+  // reproduce is a MAIN phase — its boundary must appear in buildPhaseInstructions
+  const instructions = buildPhaseInstructions(reproduce, makeCtx("investigate", 0));
+  assert.ok(instructions.includes("SCOPE BOUNDARY"), "reproduction boundary missing from main-phase instructions");
+  assert.ok(instructions.includes("do NOT"));
+});
+
+test("root-cause phase tasks carry the validate-first directive", () => {
+  const wf = getWorkflow("investigate")!;
+  const rootCause = wf.phases.find((p) => p.id === "root-cause")!;
+  const plan = buildDeterministicPlan(rootCause, makeCtx("investigate", 1));
+  assert.ok(plan.length > 0);
+  assert.ok(plan.some((s) => s.task.includes("VALIDATE it quickly")));
+});
+
   test("implement worker reads the plan file, not a lossy summary", () => {
     const implement = findPhase("develop", "implement");
     const plan = buildDeterministicPlan(implement, makeCtx("develop", 3));
     assert.equal(plan[0].agent, "worker");
     assert.ok(plan[0].task.includes(".gstack/plans/add-dark-mode-toggle.md"), "plan file reference missing");
     assert.ok(plan[0].task.includes("Read it FIRST"), "plan-first instruction missing");
+  });
+
+  test("every delegated task carries the efficiency preamble", () => {
+    for (const wfid of getWorkflowIds()) {
+      const wf = getWorkflow(wfid)!;
+      for (const phase of wf.phases) {
+        if (phase.execution !== "subagent") continue;
+        const plan = buildDeterministicPlan(phase, makeCtx(wfid, 0));
+        for (const step of plan) assert.ok(step.task.includes("WORK EFFICIENTLY"), `${wfid}/${phase.id}`);
+      }
+    }
   });
 });
 

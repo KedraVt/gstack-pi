@@ -40,6 +40,11 @@ export function buildPhaseInstructions(phase: WorkflowPhase, ctx: WorkflowContex
 
   if (phase.execution === "main") {
     parts.push(buildMainInstructions(phase, ctx));
+    const boundary = scopeBoundaryFor(phase.id);
+    if (boundary) {
+      parts.push("");
+      parts.push(boundary);
+    }
   } else if (deterministicSubagents()) {
     // The executor has already spawned the specialists; their output arrives
     // above these instructions. Do not ask the model to delegate again — and
@@ -336,14 +341,36 @@ function buildTaskSkills(phase: WorkflowPhase, task: string): string {
  * all {goal}/{branch}/{*_summary} placeholders and skill methodology already
  * interpolated. Used by the deterministic executor to spawn subagents itself.
  */
+// Scope boundaries keyed by phase id. The session debug of 2026-08-22 showed
+// the reproduce phase drifting into full root-causing (the injected
+// gstack-investigate digest contains the whole debugging methodology), which
+// made the subsequent root-cause chain — and its manual approval gate — feel
+// redundant to the user. These directives keep each phase inside its lane.
+const PHASE_BOUNDARIES: Record<string, string> = {
+  reproduce:
+    "SCOPE BOUNDARY: This is the REPRODUCTION phase. Deliverable: a reliable, deterministic way to trigger the bug + precise symptoms. Briefly NOTE suspected causes if obvious, but do NOT deep-dive them, do NOT produce a full diagnosis, and do NOT change any files — that is the next phase's job.",
+  "root-cause":
+    "EFFICIENCY DIRECTIVE: Check the completed-phase summaries first. If a confirmed root cause already emerged during reproduction, VALIDATE it quickly against the code (confirm mechanism + affected files) instead of re-investigating from scratch, then report. Only widen the investigation if validation fails.",
+};
+
+/** Generic efficiency preamble appended to every delegated task. */
+const EFFICIENCY_PREAMBLE =
+  "WORK EFFICIENTLY: wall-clock time matters. Prefer targeted greps and partial reads over exhaustive exploration; stop as soon as your deliverable is supported by evidence. Rough budget: <= 25 tool calls.\n\n";
+
+export function scopeBoundaryFor(phaseId: string): string {
+  return PHASE_BOUNDARIES[phaseId] ?? "";
+}
+
 export function buildDeterministicPlan(phase: WorkflowPhase, ctx: WorkflowContext): Array<{ agent: string; task: string }> {
+  const boundary = scopeBoundaryFor(phase.id);
+  const suffix = boundary ? `\n\n${boundary}` : "";
   if (phase.chain && phase.chain.length > 0) {
     return phase.chain.map((step) => ({
       agent: step.agent,
-      task: interpolate(buildTaskSkills(phase, step.task), ctx),
+      task: EFFICIENCY_PREAMBLE + interpolate(buildTaskSkills(phase, step.task), ctx) + suffix,
     }));
   }
-  return [{ agent: phase.agent ?? "worker", task: interpolate(buildAgentTask(phase, ctx), ctx) }];
+  return [{ agent: phase.agent ?? "worker", task: EFFICIENCY_PREAMBLE + interpolate(buildAgentTask(phase, ctx), ctx) + suffix }];
 }
 
 function interpolate(template: string, ctx: WorkflowContext): string {

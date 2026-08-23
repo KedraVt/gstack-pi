@@ -177,7 +177,15 @@ async function runDeterministicDelegation(
   let previous = "";
   for (const [index, step] of plan.entries()) {
     if (!alive()) break; // session reloaded mid-chain — stop spawning work
-    const task = step.task.replace(/\{previous\}/g, previous || "(no prior output)");
+    // Cap the handoff payload: a full 50K-char upstream report inflates every
+    // downstream turn's prefill and encourages re-exploration. The orchestrator
+    // still receives the FULL output; specialists get the head of it.
+    const PREVIOUS_CAP = 12000;
+    const previousForTask =
+      previous.length > PREVIOUS_CAP
+        ? `${previous.slice(0, PREVIOUS_CAP)}\n…(handoff truncated at ${PREVIOUS_CAP} chars — full report available in phase summary)`
+        : previous;
+    const task = step.task.replace(/\{previous\}/g, previousForTask || "(no prior output)");
     try {
       ctx.ui.notify(`gstack: running subagent "${step.agent}"…`, "info");
     } catch {
