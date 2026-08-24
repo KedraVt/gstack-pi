@@ -302,7 +302,7 @@ Deferred ideas live in `TODOS.md` (absorbed the old `FUTURE_UPDATES.md`).
 | "gstack browse binary not found" | Run `update.sh` or set `GSTACK_BINARY` |
 | "server-node.mjs not found" (Windows) | Run `bash browse/scripts/build-node-server.sh` in the gstack repo |
 | `/gstack` not showing in pi | Ensure the extension is in `~/.pi/agent/extensions/gstack-pi/` with `index.ts` at root |
-| Subagent phases fail | Ensure `~/.pi/agent/agents/` has scout.md, planner.md, worker.md, reviewer.md |
+| Subagent phases fail | Ensure `~/.pi/agent/agents/` has scout.md, planner.md, worker.md, reviewer.md — canonical copies live in this repo's [`agents/`](agents/) and are synced by `update.sh` (existing files backed up, never deleted). If you hand-tuned them, re-apply your changes after a sync or restore from the `.bak-<timestamp>` copy |
 | Skills not loading | Pi requires `"skills": ["./skills"]` in a package.json, or project `.pi/settings.json` |
 
 ## License

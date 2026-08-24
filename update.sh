@@ -168,6 +168,31 @@ if [ -n "$STALE" ]; then
   echo ""
 fi
 
+# 8c. Sync specialist agent definitions (HANDOFF WP3 §5.1). Backup-then-copy,
+# never deletes: user-tuned files in ~/.pi/agent/agents are preserved as
+# <name>.md.bak-<runstamp> before being overwritten by canonical versions.
+AGENT_DEST="$HOME/.pi/agent/agents"
+if [ -d "$AGENT_DEST" ]; then
+  echo "==> Syncing specialist agents..."
+  STAMP=$(date +%Y%m%d-%H%M%S)
+  for agent_file in "$DEST"/agents/*.md; do
+    [ -f "$agent_file" ] || continue
+    name=$(basename "$agent_file")
+    target="$AGENT_DEST/$name"
+    if [ -f "$target" ]; then
+      if cmp -s "$agent_file" "$target"; then
+        continue  # identical — nothing to do
+      fi
+      cp "$target" "$target.bak-$STAMP"
+      echo "  backed up: $name -> $name.bak-$STAMP"
+    fi
+    cp "$agent_file" "$target"
+    echo "  synced: $name"
+  done
+else
+  echo "==> Skipping agent sync ($AGENT_DEST not found)"
+fi
+
 # 9. Verify
 echo "==> Verifying..."
 BINARY="$DEST/runtime/browse/dist/browse.exe"
