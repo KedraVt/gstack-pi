@@ -3,7 +3,7 @@
 Browser automation + guided workflow orchestrator for the [pi](https://github.com/earendil-works/pi) coding agent.
 
 One extension, two layers:
-- **60 native browser tools** — headless Chromium via gstack, ~100ms/command
+- **65 native browser tools** — headless Chromium via gstack, ~100ms/command (chain batches N commands into one call)
 - **Workflow orchestrator** — `/gstack` command that guides you through develop, investigate, QA, ship, and review pipelines
 
 ## What's new (feat/skill-ingestion branch)
@@ -104,7 +104,7 @@ Suggestions are advisory — the LLM asks before starting a workflow. Slash comm
 
 Any agent — including spawned subagents, which load this extension too — can bootstrap a workflow with the `gstack_start { workflow, goal }` tool.
 
-### Browser tools (60)
+### Browser tools (65)
 
 All registered as native pi tools, callable by the LLM automatically:
 
@@ -114,6 +114,12 @@ gstack_screenshot, gstack_text, gstack_html, gstack_console,
 gstack_network, gstack_responsive, gstack_diff, gstack_is,
 gstack_cookie_import_browser, gstack_pdf, ...
 ```
+
+WP1 additions: `gstack_chain` runs a JSON array of `[cmd, ...args]` batches in ONE
+call (payload via stdin; output enveloped as untrusted web content), `gstack_dialog`
+reads the daemon's dialog ring buffer, `gstack_perf` returns page metrics, and
+`gstack_daemon_status` / `gstack_daemon_restart` expose daemon health and recovery
+(the `daemon-` prefix distinguishes them from the orchestrator's own `/gstack status`).
 
 Full list: see `tools.generated.ts` (60 commands from the gstack browse CLI).
 
@@ -361,6 +367,7 @@ the root-cause scout->planner chain collapses to ONE validate-only planner step.
 | `GSTACK_PI_MANUAL_GATES` | on | approval pause after decision phases |
 | `GSTACK_PI_OPTIONAL_PHASES` | ask | `ask` \| `auto` \| `skip` handling of optional phases |
 | `GSTACK_PI_AUTO_GATE_VALIDATED` | off | auto-advance past root-cause gate when validation starts with `VALIDATED:` |
+| `GSTACK_PI_STRICT_CONTENT` | off | heuristic scan + ASCII-sentinel enveloping of page-content tool output (WP2 defense-in-depth) |
 | `GSTACK_PI_SUBAGENT_TIMEOUT` | 1200 | fallback timeout, seconds |
 | `GSTACK_PI_TIMEOUT_EXPLORE` / `_WORK` / `_VERIFY` | 900 / 1500 / 900 | per-class timeouts, seconds |
 | `GSTACK_PI_LIVENESS_SEC` | 240 | observe-only silence threshold, seconds; `off` disables |
