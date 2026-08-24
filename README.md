@@ -222,7 +222,7 @@ gstack-pi/
 │   └── sync-skills.ts       Re-sync skills with path rewriting
 ├── test/
 │   └── orchestrator.test.ts Unit tests (state machine, gates, workflows, tiering, intents)
-├── FUTURE_UPDATES.md        Deliberately deferred features & skill integrations
+├── TODOS.md                 Backlog: deferred features, skill integrations, follow-ups
 ├── update.sh                Pull submodule + build + deploy + feature detection
 └── .gitignore               Excludes runtime/ (built artifacts)
 ```
@@ -264,7 +264,7 @@ State persists across session reloads via pi's `appendEntry` (not sent to LLM co
 - `feat/skill-ingestion` — everything documented here.
 - Runtime kill switches (env): `GSTACK_PI_SKILLS=off`, `GSTACK_PI_DETERMINISTIC=off`, `GSTACK_PI_MANUAL_GATES=off`.
 
-Deferred ideas live in `FUTURE_UPDATES.md`.
+Deferred ideas live in `TODOS.md` (absorbed the old `FUTURE_UPDATES.md`).
 
 ## Security
 
