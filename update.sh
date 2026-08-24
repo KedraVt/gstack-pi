@@ -113,6 +113,18 @@ cp browse/dist/browse.exe "$DEST/runtime/browse/dist/" 2>/dev/null || cp browse/
 cp browse/dist/server-node.mjs "$DEST/runtime/browse/dist/"
 cp browse/dist/bun-polyfill.cjs "$DEST/runtime/browse/dist/"
 
+# 6b. Guard (HANDOFF WP2 §4.2): the server-side content envelope must survive
+# rebuilds. If upstream browse ever drops wrapUntrustedContent, page-content
+# output loses its untrusted-content envelope — warn loudly instead of
+# degrading silently.
+if ! grep -q "wrapUntrustedContent" "$DEST/runtime/browse/dist/server-node.mjs" 2>/dev/null; then
+  echo ""
+  echo "  WARNING: runtime/browse/dist/server-node.mjs no longer contains"
+  echo "  'wrapUntrustedContent'. The daemon-side untrusted-content envelope may"
+  echo "  be gone — inspect upstream browse/src changes before relying on QA output."
+  echo ""
+fi
+
 # 7. Sync bin scripts
 echo "==> Syncing bin scripts..."
 for script in "${BIN_SCRIPTS[@]}"; do

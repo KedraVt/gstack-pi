@@ -50,6 +50,17 @@ export function autoGateValidated(): boolean {
   return parse(process.env.GSTACK_PI_AUTO_GATE_VALIDATED) ?? false;
 }
 
+/**
+ * WP2 §4.2: opt-in strict scanning of page-content tool output. When ON, every
+ * command in PAGE_CONTENT_COMMANDS has its stdout heuristically scanned and
+ * enveloped between our ASCII sentinels. Default OFF: the daemon-side envelope
+ * plus the SECURITY system-prompt section are always on; this flag adds the
+ * extension-side heuristic layer for users who want defense-in-depth.
+ */
+export function strictContent(): boolean {
+  return parse(process.env.GSTACK_PI_STRICT_CONTENT) ?? false;
+}
+
 // --- Numeric configuration (STEP 5a / COR-06, COR-10) -------------------------
 
 const warnedOnce = new Set<string>();

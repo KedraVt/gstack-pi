@@ -4,6 +4,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runBrowse, cap, classifyError } from "./lib/browse";
 import { isAllowed } from "./lib/commands";
 import { SCHEMA_FOR, BARE_SCHEMA } from "./lib/schemas";
+import { PAGE_CONTENT_COMMANDS, strictWrap } from "./lib/content-security";
+import { strictContent } from "./orchestrator/config";
 
 const TOOLS = [
   {
@@ -791,8 +793,13 @@ export function registerGstackTools(pi: ExtensionAPI) {
         }
 
         const { body } = cap(stdout, params);
+        // WP2 §4.2: opt-in strict scan of page-derived output (GSTACK_PI_STRICT_CONTENT).
+        let finalBody = body;
+        if (strictContent() && PAGE_CONTENT_COMMANDS.has(t.gstackCmd)) {
+          finalBody = strictWrap(body, t.gstackCmd).body;
+        }
         return {
-          content: [{ type: "text", text: body }],
+          content: [{ type: "text", text: finalBody }],
           details: { code },
         };
       },

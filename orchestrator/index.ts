@@ -8,8 +8,20 @@ import { launchPhase, invalidateRuntime } from "./executor.ts";
 import { manualGates, autoGateValidated } from "./config.ts";
 import { isValidatedStrategy } from "./skip.ts";
 import { ensureRun, writeRunReport } from "./telemetry.ts";
+import { SECURITY_SECTION } from "../lib/content-security.ts";
 
 export function initOrchestrator(pi: ExtensionAPI): void {
+  // WP2 §4.1: teach the model what the untrusted-content envelope markers mean.
+  // Defensive `(pi as any)` + try/catch mirrors the session-event handling
+  // above: older pi versions without before_agent_start simply skip it.
+  try {
+    (pi as any).on("before_agent_start", async (event: { systemPrompt?: string }) => ({
+      systemPrompt: (event.systemPrompt ?? "") + "\n\n" + SECURITY_SECTION,
+    }));
+  } catch {
+    /* event not supported by this pi version */
+  }
+
   // Invalidate all in-flight background chains when the session is replaced,
   // reloaded or forked. Without this, a subagent chain started before the
   // reload keeps running against a stale ExtensionContext and any ctx.ui
