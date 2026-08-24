@@ -175,6 +175,27 @@ The script also detects new upstream features (skills, tools, bin scripts) not y
 To include new skills: add them to `SKILLS=` in `update.sh`.
 To include new tools: run `bun run scripts/gen-tools.ts`.
 
+### Skill adaptation pipeline
+
+`scripts/adapt-skills.ts` translates freshly-pulled upstream SKILL.md files (written for Claude Code) into the pi form bundled in `skills/`: frontmatter rebuild, Pi adapter note, and path mapping to this extension's `runtime/bin`, `source/bin` and `source/`. It runs automatically as step 8 of `update.sh`; standalone usage:
+
+```bash
+bun run scripts/adapt-skills.ts --check          # dry-run: report diffs, write nothing
+bun run scripts/adapt-skills.ts gstack-cso ...   # restrict to specific skills
+```
+
+The root `gstack` router skill is hand-maintained and never regenerated.
+
+### Backups
+
+A pre-migration snapshot of `skills/` and `update.sh` (before the runtime-path decoupling from the legacy adapter install) is kept at:
+
+```
+%TEMP%\opencode\gstack-pi-backup-20260824\
+```
+
+This is temporary storage: it can be deleted once you're satisfied with the adapted skills (a fresh backup is always one `git checkout` away — see `git log -- skills/`).
+
 ## Regenerating tools
 
 When gstack adds new browse commands:
