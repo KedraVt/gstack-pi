@@ -6,7 +6,12 @@ set -e
 DEST="$(cd "$(dirname "$0")" && pwd)"
 REPO="$DEST/source"
 SKILLS=(gstack gstack-autoplan gstack-context-restore gstack-context-save gstack-cso gstack-design-review gstack-document-generate gstack-document-release gstack-investigate gstack-learn gstack-office-hours gstack-plan-ceo-review gstack-plan-design-review gstack-plan-devex-review gstack-plan-eng-review gstack-qa-only gstack-qa gstack-retro gstack-review gstack-scrape gstack-ship gstack-skillify gstack-spec)
-BIN_SCRIPTS=(gstack-config gstack-slug gstack-update-check gstack-session-kind gstack-repo-mode gstack-learnings-search gstack-learnings-log gstack-timeline-log gstack-telemetry-log)
+# Self-contained scripts (bash, or bun with no relative imports) synced into runtime/bin.
+# SKILL.md references point here for these.
+BIN_SCRIPTS=(gstack-config gstack-slug gstack-update-check gstack-session-kind gstack-repo-mode gstack-learnings-search gstack-timeline-log gstack-brain-sync gstack-codex-probe gstack-developer-profile gstack-diff-scope gstack-first-task-detect gstack-next-version gstack-paths gstack-pr-title-rewrite.sh gstack-question-preference gstack-review-log gstack-review-read gstack-specialist-stats gstack-team-init gstack-version-bump)
+# TS-backed scripts that import ../lib — they MUST stay in source/bin (bun resolves
+# their deps from the vendored checkout). SKILL.md references point to source/bin.
+SOURCE_BIN_SCRIPTS=(gstack-brain-cache gstack-decision-log gstack-decision-search gstack-learnings-log gstack-question-log gstack-redact gstack-telemetry-log)
 
 if [ ! -d "$REPO/.git" ] && [ ! -f "$REPO/.git" ]; then
   echo "ERROR: gstack source not found at $REPO"
@@ -51,7 +56,7 @@ for script in "$REPO"/bin/gstack-*; do
   [ -f "$script" ] || continue
   name=$(basename "$script")
   found=0
-  for local_bin in "${BIN_SCRIPTS[@]}"; do
+  for local_bin in "${BIN_SCRIPTS[@]}" "${SOURCE_BIN_SCRIPTS[@]}"; do
     [ "$name" = "$local_bin" ] && found=1 && break
   done
   if [ $found -eq 0 ]; then
@@ -114,18 +119,22 @@ for script in "${BIN_SCRIPTS[@]}"; do
   [ -f "bin/$script" ] && cp "bin/$script" "$DEST/runtime/bin/"
 done
 
-# 8. Sync skills from source
-echo "==> Syncing ${#SKILLS[@]} skills..."
-mkdir -p "$DEST/skills"
-for skill in "${SKILLS[@]}"; do
-  skill_name="${skill#gstack-}"
-  [ "$skill" = "gstack" ] && skill_name="browse"
-  src_dir="$REPO/$skill_name"
-  if [ -f "$src_dir/SKILL.md" ]; then
-    mkdir -p "$DEST/skills/$skill"
-    cp "$src_dir/SKILL.md" "$DEST/skills/$skill/"
-  fi
+# 7b. Verify TS-backed scripts stay available in source/bin (never copied to runtime:
+#     they import ../lib and only resolve from inside the checkout)
+for script in "${SOURCE_BIN_SCRIPTS[@]}"; do
+  [ -f "bin/$script" ] || echo "WARNING: missing source bin script (skills will degrade): $script"
 done
+
+# 8. Adapt skills from freshly-pulled source into pi form
+#    scripts/adapt-skills.ts rewrites frontmatter, prepends the Pi adapter note and
+#    maps ~/.claude/skills/gstack paths to runtime/ + source/. Idempotent; the root
+#    gstack router skill is preserved untouched.
+echo "==> Adapting ${#SKILLS[@]} skills..."
+if command -v bun >/dev/null 2>&1; then
+  (cd "$DEST" && bun scripts/adapt-skills.ts) || echo "WARNING: skill adaptation failed — previous skills kept"
+else
+  echo "WARNING: bun not found — skipping skill adaptation"
+fi
 
 # 8b. Digest drift check: warn when an upstream SKILL.md is newer than its distilled digest
 echo "==> Checking digest freshness..."

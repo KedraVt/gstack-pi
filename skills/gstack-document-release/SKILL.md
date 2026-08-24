@@ -14,7 +14,7 @@ This skill was generated from Garry Tan's [gstack](https://github.com/garrytan/g
 - Use Pi's lowercase tools (`read`, `bash`, `edit`, `write`) when the upstream skill says Read, Bash, Edit, or Write.
 - pi-gstack provides compatibility tools named `AskUserQuestion`, `Agent`, `Task`, `TodoWrite`, `ExitPlanMode`, and `gstack_safety` for upstream Claude Code workflows.
 - For best `Agent` / `Task` behavior, install Pi's native subagent package with `pi install npm:pi-subagents`. If the `subagent` tool is available, prefer it for independent specialist agents; otherwise pi-gstack's built-in `Agent` / `Task` fallback is supported.
-- gstack runtime path: `C:/Users/Mattia/.pi/agent/gstack-pi/repo`. This adapter rewrites global `~/.claude/skills/gstack` and project `.claude/skills/gstack` references to that path and does not install anything into `~/.claude`.
+- gstack runtime path: `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source`. This adapter rewrites global `~/.claude/skills/gstack` and project `.claude/skills/gstack` references to that path and does not install anything into `~/.claude`.
 - Browser, design, and PDF workflows need gstack's compiled binaries plus Bun/Playwright Chromium. If `/gstack-status` reports a missing or stale build, run `/gstack-build` once.
 
 <!-- AUTO-GENERATED from SKILL.md.tmpl — do not edit directly -->
@@ -34,24 +34,24 @@ or "post-ship docs". Proactively suggest after a PR is merged or code is shipped
 ## Preamble (run first)
 
 ```bash
-_UPD=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-update-check 2>/dev/null || C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-update-check 2>/dev/null || true)
+_UPD=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-update-check 2>/dev/null || C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-update-check 2>/dev/null || true)
 [ -n "$_UPD" ] && echo "$_UPD" || true
 mkdir -p ~/.gstack/sessions
 touch ~/.gstack/sessions/"$PPID"
 _SESSIONS=$(find ~/.gstack/sessions -mmin -120 -type f 2>/dev/null | wc -l | tr -d ' ')
 find ~/.gstack/sessions -mmin +120 -type f -exec rm {} + 2>/dev/null || true
-_PROACTIVE=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config get proactive 2>/dev/null || echo "true")
+_PROACTIVE=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config get proactive 2>/dev/null || echo "true")
 _PROACTIVE_PROMPTED=$([ -f ~/.gstack/.proactive-prompted ] && echo "yes" || echo "no")
 _BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
 echo "BRANCH: $_BRANCH"
-_SKILL_PREFIX=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config get skill_prefix 2>/dev/null || echo "false")
+_SKILL_PREFIX=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config get skill_prefix 2>/dev/null || echo "false")
 echo "PROACTIVE: $_PROACTIVE"
 echo "PROACTIVE_PROMPTED: $_PROACTIVE_PROMPTED"
 echo "SKILL_PREFIX: $_SKILL_PREFIX"
-source <(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-repo-mode 2>/dev/null) || true
+source <(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-repo-mode 2>/dev/null) || true
 REPO_MODE=${REPO_MODE:-unknown}
 echo "REPO_MODE: $REPO_MODE"
-_SESSION_KIND=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-session-kind 2>/dev/null || echo "interactive")
+_SESSION_KIND=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-session-kind 2>/dev/null || echo "interactive")
 case "$_SESSION_KIND" in spawned|headless|interactive) ;; *) _SESSION_KIND="interactive" ;; esac
 echo "SESSION_KIND: $_SESSION_KIND"
 # Conductor host: AskUserQuestion is unreliable here (native disabled, MCP
@@ -69,21 +69,21 @@ echo "FIRST_LOOP_SHOWN: $_FIRST_LOOP_SHOWN"
 # (ACTIVATED=no, interactive) so it stays off the hot path for every run after.
 _FIRST_TASK=""
 if [ "$_ACTIVATED" = "no" ] && [ "$_SESSION_KIND" != "headless" ]; then
-  _FIRST_TASK=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-first-task-detect 2>/dev/null || true)
+  _FIRST_TASK=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-first-task-detect 2>/dev/null || true)
 fi
 echo "FIRST_TASK: $_FIRST_TASK"
 _LAKE_SEEN=$([ -f ~/.gstack/.completeness-intro-seen ] && echo "yes" || echo "no")
 echo "LAKE_INTRO: $_LAKE_SEEN"
-_TEL=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config get telemetry 2>/dev/null || true)
+_TEL=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config get telemetry 2>/dev/null || true)
 _TEL_PROMPTED=$([ -f ~/.gstack/.telemetry-prompted ] && echo "yes" || echo "no")
 _TEL_START=$(date +%s)
 _SESSION_ID="$$-$(date +%s)"
 echo "TELEMETRY: ${_TEL:-off}"
 echo "TEL_PROMPTED: $_TEL_PROMPTED"
-_EXPLAIN_LEVEL=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config get explain_level 2>/dev/null || echo "default")
+_EXPLAIN_LEVEL=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config get explain_level 2>/dev/null || echo "default")
 if [ "$_EXPLAIN_LEVEL" != "default" ] && [ "$_EXPLAIN_LEVEL" != "terse" ]; then _EXPLAIN_LEVEL="default"; fi
 echo "EXPLAIN_LEVEL: $_EXPLAIN_LEVEL"
-_QUESTION_TUNING=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config get question_tuning 2>/dev/null || echo "false")
+_QUESTION_TUNING=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config get question_tuning 2>/dev/null || echo "false")
 echo "QUESTION_TUNING: $_QUESTION_TUNING"
 mkdir -p ~/.gstack/analytics
 if [ "$_TEL" != "off" ]; then
@@ -91,42 +91,42 @@ echo '{"skill":"document-release","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","repo"
 fi
 for _PF in $(find ~/.gstack/analytics -maxdepth 1 -name '.pending-*' 2>/dev/null); do
   if [ -f "$_PF" ]; then
-    if [ "$_TEL" != "off" ] && [ -x "C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-telemetry-log" ]; then
-      C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-telemetry-log --event-type skill_run --skill _pending_finalize --outcome unknown --session-id "$_SESSION_ID" 2>/dev/null || true
+    if [ "$_TEL" != "off" ] && [ -x "C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-telemetry-log" ]; then
+      C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-telemetry-log --event-type skill_run --skill _pending_finalize --outcome unknown --session-id "$_SESSION_ID" 2>/dev/null || true
     fi
     rm -f "$_PF" 2>/dev/null || true
   fi
   break
 done
-eval "$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
+eval "$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
 _LEARN_FILE="${GSTACK_HOME:-$HOME/.gstack}/projects/${SLUG:-unknown}/learnings.jsonl"
 if [ -f "$_LEARN_FILE" ]; then
   _LEARN_COUNT=$(wc -l < "$_LEARN_FILE" 2>/dev/null | tr -d ' ')
   echo "LEARNINGS: $_LEARN_COUNT entries loaded"
   if [ "$_LEARN_COUNT" -gt 5 ] 2>/dev/null; then
-    C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-learnings-search --limit 3 2>/dev/null || true
+    C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-learnings-search --limit 3 2>/dev/null || true
   fi
 else
   echo "LEARNINGS: 0"
 fi
-C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-timeline-log '{"skill":"document-release","event":"started","branch":"'"$_BRANCH"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
+C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-timeline-log '{"skill":"document-release","event":"started","branch":"'"$_BRANCH"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
 _HAS_ROUTING="no"
 if [ -f CLAUDE.md ] && grep -q "## Skill routing" CLAUDE.md 2>/dev/null; then
   _HAS_ROUTING="yes"
 fi
-_ROUTING_DECLINED=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config get routing_declined 2>/dev/null || echo "false")
+_ROUTING_DECLINED=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config get routing_declined 2>/dev/null || echo "false")
 echo "HAS_ROUTING: $_HAS_ROUTING"
 echo "ROUTING_DECLINED: $_ROUTING_DECLINED"
 _VENDORED="no"
-if [ -d "C:/Users/Mattia/.pi/agent/gstack-pi/repo" ] && [ ! -L "C:/Users/Mattia/.pi/agent/gstack-pi/repo" ]; then
-  if [ -f "C:/Users/Mattia/.pi/agent/gstack-pi/repo/VERSION" ] || [ -d "C:/Users/Mattia/.pi/agent/gstack-pi/repo/.git" ]; then
+if [ -d "C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source" ] && [ ! -L "C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source" ]; then
+  if [ -f "C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/VERSION" ] || [ -d "C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/.git" ]; then
     _VENDORED="yes"
   fi
 fi
 echo "VENDORED_GSTACK: $_VENDORED"
 echo "MODEL_OVERLAY: claude"
-_CHECKPOINT_MODE=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config get checkpoint_mode 2>/dev/null || echo "explicit")
-_CHECKPOINT_PUSH=$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config get checkpoint_push 2>/dev/null || echo "false")
+_CHECKPOINT_MODE=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config get checkpoint_mode 2>/dev/null || echo "explicit")
+_CHECKPOINT_PUSH=$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config get checkpoint_push 2>/dev/null || echo "false")
 echo "CHECKPOINT_MODE: $_CHECKPOINT_MODE"
 echo "CHECKPOINT_PUSH: $_CHECKPOINT_PUSH"
 # Plan-mode hint for skills like /skill:gstack-spec that branch behavior on plan-mode state.
@@ -155,15 +155,15 @@ If the user invokes a skill in plan mode, the skill takes precedence over generi
 
 If `PROACTIVE` is `"false"`, do not auto-invoke or proactively suggest skills. If a skill seems useful, ask: "I think /skillname might help here — want me to run it?"
 
-If `SKILL_PREFIX` is `"true"`, suggest/invoke `/gstack-*` names. Disk paths stay `C:/Users/Mattia/.pi/agent/gstack-pi/repo/[skill-name]/SKILL.md`.
+If `SKILL_PREFIX` is `"true"`, suggest/invoke `/gstack-*` names. Disk paths stay `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/[skill-name]/SKILL.md`.
 
 If output shows `UPGRADE_AVAILABLE <old> <new>`: use `/skill:gstack-upgrade` for the Pi-native update flow, or ask whether to run `/gstack-sync` and `/gstack-build`.
 
 If output shows `JUST_UPGRADED <from> <to>`: print "Running gstack v{to} (just updated!)". If `SPAWNED_SESSION` is true, skip feature discovery.
 
 Feature discovery, max one prompt per session:
-- Missing `C:/Users/Mattia/.pi/agent/gstack-pi/repo/.feature-prompted-continuous-checkpoint`: AskUserQuestion for Continuous checkpoint auto-commits. If accepted, run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config set checkpoint_mode continuous`. Always touch marker.
-- Missing `C:/Users/Mattia/.pi/agent/gstack-pi/repo/.feature-prompted-model-overlay`: inform "Model overlays are active. MODEL_OVERLAY shows the patch." Always touch marker.
+- Missing `C:/Users/Mattia/.gstack/.feature-prompted-continuous-checkpoint`: AskUserQuestion for Continuous checkpoint auto-commits. If accepted, run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config set checkpoint_mode continuous`. Always touch marker.
+- Missing `C:/Users/Mattia/.gstack/.feature-prompted-model-overlay`: inform "Model overlays are active. MODEL_OVERLAY shows the patch." Always touch marker.
 
 After upgrade prompts, continue workflow.
 
@@ -176,7 +176,7 @@ Options:
 - B) Restore V0 prose — set `explain_level: terse`
 
 If A: leave `explain_level` unset (defaults to `default`).
-If B: run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config set explain_level terse`.
+If B: run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config set explain_level terse`.
 
 Always run (regardless of choice):
 ```bash
@@ -203,7 +203,7 @@ Options:
 - A) Help gstack get better! (recommended)
 - B) No thanks
 
-If A: run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config set telemetry community`
+If A: run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config set telemetry community`
 
 If B: ask follow-up:
 
@@ -213,8 +213,8 @@ Options:
 - A) Sure, anonymous is fine
 - B) No thanks, fully off
 
-If B→A: run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config set telemetry anonymous`
-If B→B: run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config set telemetry off`
+If B→A: run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config set telemetry anonymous`
+If B→B: run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config set telemetry off`
 
 Always run:
 ```bash
@@ -231,8 +231,8 @@ Options:
 - A) Keep it on (recommended)
 - B) Turn it off — I'll type /commands myself
 
-If A: run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config set proactive true`
-If B: run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config set proactive false`
+If A: run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config set proactive true`
+If B: run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config set proactive false`
 
 Always run:
 ```bash
@@ -245,7 +245,7 @@ Skip if `PROACTIVE_PROMPTED` is `yes`.
 
 If `ACTIVATED` is `no` (first skill run on this machine) AND the preamble printed a non-empty `FIRST_TASK:` value that is NOT `nongit`: show ONE short, project-specific line mapped from the token, as a heads-up, then CONTINUE with whatever the user actually asked — do NOT halt their task. Map the token: `greenfield` → "Fresh repo — shape it first with `/skill:gstack-spec` or `/skill:gstack-office-hours`." `code_node`/`code_python`/`code_rust`/`code_go`/`code_ruby`/`code_ios` → "There's code here — `/skill:gstack-qa` to see it work, or `/skill:gstack-investigate` if something's off." `branch_ahead` → "Unshipped work on this branch — `/skill:gstack-review` then `/skill:gstack-ship`." `dirty_default` → "Uncommitted changes — `/skill:gstack-review` before committing." `clean_default` → "Pick one: `/skill:gstack-spec`, `/skill:gstack-investigate`, or `/skill:gstack-qa`." Then substitute the token you saw for TASK_TOKEN and run (best-effort), and mark activated:
 ```bash
-C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-telemetry-log --event-type first_task_scaffold_shown --skill "TASK_TOKEN" --outcome shown 2>/dev/null || true
+C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-telemetry-log --event-type first_task_scaffold_shown --skill "TASK_TOKEN" --outcome shown 2>/dev/null || true
 touch ~/.gstack/.activated 2>/dev/null || true
 ```
 
@@ -296,13 +296,13 @@ Key routing rules:
 
 Pi adapter: if the user approves routing rules, append them to `AGENTS.md` or `CLAUDE.md`, but do not commit unless the user explicitly asks.
 
-If B: run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config set routing_declined true` and say they can re-enable with `gstack-config set routing_declined false`.
+If B: run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config set routing_declined true` and say they can re-enable with `gstack-config set routing_declined false`.
 
 This only happens once per project. Skip if `HAS_ROUTING` is `yes` or `ROUTING_DECLINED` is `true`.
 
 If `VENDORED_GSTACK` is `yes`, warn once via AskUserQuestion unless `~/.gstack/.vendoring-warned-$SLUG` exists:
 
-> This project has gstack vendored in `C:/Users/Mattia/.pi/agent/gstack-pi/repo/`. Vendoring is deprecated.
+> This project has gstack vendored in `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/`. Vendoring is deprecated.
 > Migrate to team mode?
 
 Options:
@@ -310,17 +310,17 @@ Options:
 - B) No, I'll handle it myself
 
 If A:
-1. Run `git rm -r C:/Users/Mattia/.pi/agent/gstack-pi/repo/`
-2. Run `echo 'C:/Users/Mattia/.pi/agent/gstack-pi/repo/' >> .gitignore`
-3. Run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-team-init required` (or `optional`)
+1. Run `git rm -r C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/`
+2. Run `echo 'C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/' >> .gitignore`
+3. Run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-team-init required` (or `optional`)
 4. Run `git add .claude/ .gitignore CLAUDE.md && git commit -m "chore: migrate gstack from vendored to team mode"`
-5. Tell the user: "Done. Each developer now runs: `cd C:/Users/Mattia/.pi/agent/gstack-pi/repo && ./setup --team`"
+5. Tell the user: "Done. Each developer now runs: `cd C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source && ./setup --team`"
 
 If B: say "OK, you're on your own to keep the vendored copy up to date."
 
 Always run (regardless of choice):
 ```bash
-eval "$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
+eval "$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
 touch ~/.gstack/.vendoring-warned-${SLUG:-unknown}
 ```
 
@@ -469,8 +469,8 @@ if [ -f "$HOME/.gstack-artifacts-remote.txt" ]; then
 else
   _BRAIN_REMOTE_FILE="$HOME/.gstack-brain-remote.txt"
 fi
-_BRAIN_SYNC_BIN="C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-brain-sync"
-_BRAIN_CONFIG_BIN="C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-config"
+_BRAIN_SYNC_BIN="C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-brain-sync"
+_BRAIN_CONFIG_BIN="C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-config"
 
 # /skill:gstack-sync-gbrain context-load: teach the agent to use gbrain when it's available.
 # Per-worktree pin: post-spike redesign uses kubectl-style `.gbrain-source` in the
@@ -579,8 +579,8 @@ If A/B and `~/.gstack/.git` is missing, ask whether to run `gstack-artifacts-ini
 At skill END before telemetry:
 
 ```bash
-"C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
-"C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-brain-sync" --once 2>/dev/null || true
+"C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
+"C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-brain-sync" --once 2>/dev/null || true
 ```
 
 
@@ -623,7 +623,7 @@ Bad: "I've identified a potential issue in the authentication flow that may caus
 At session start or after compaction, recover recent project context.
 
 ```bash
-eval "$(C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-slug 2>/dev/null)"
+eval "$(C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-slug 2>/dev/null)"
 _PROJ="${GSTACK_HOME:-$HOME/.gstack}/projects/${SLUG:-unknown}"
 if [ -d "$_PROJ" ]; then
   echo "--- RECENT ARTIFACTS ---"
@@ -640,7 +640,7 @@ if [ -d "$_PROJ" ]; then
   [ -n "$_LATEST_CP" ] && echo "LATEST_CHECKPOINT: $_LATEST_CP"
   if [ -f "$_PROJ/decisions.active.json" ]; then
     echo "--- ACTIVE DECISIONS (recent, scope-relevant) ---"
-    C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-decision-search --recent 5 2>/dev/null
+    C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-decision-search --recent 5 2>/dev/null
     echo "--- END DECISIONS ---"
   fi
   echo "--- END ARTIFACTS ---"
@@ -649,7 +649,7 @@ fi
 
 If artifacts are listed, read the newest useful one. If `LAST_SESSION` or `LATEST_CHECKPOINT` appears, give a 2-sentence welcome back summary. If `RECENT_PATTERN` clearly implies a next skill, suggest it once.
 
-**Cross-session decisions.** If `ACTIVE DECISIONS` are listed, treat them as prior settled calls with their rationale — do not silently re-litigate them; if you're about to reverse one, say so explicitly. Reach for `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-decision-search` whenever a question touches a past decision ("what did we decide / why / did we try"). When you or the user make a DURABLE decision (architecture, scope, tool/vendor choice, or a reversal) — NOT a turn-level or trivial choice — log it with `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-decision-log` (`--supersede <id>` for a reversal). Reliable and local; gbrain not required.
+**Cross-session decisions.** If `ACTIVE DECISIONS` are listed, treat them as prior settled calls with their rationale — do not silently re-litigate them; if you're about to reverse one, say so explicitly. Reach for `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-decision-search` whenever a question touches a past decision ("what did we decide / why / did we try"). When you or the user make a DURABLE decision (architecture, scope, tool/vendor choice, or a reversal) — NOT a turn-level or trivial choice — log it with `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-decision-log` (`--supersede <id>` for a reversal). Reliable and local; gbrain not required.
 
 ## Writing Style (skip entirely if `EXPLAIN_LEVEL: terse` appears in the preamble echo OR the user's current message explicitly requests terse / no-explanations output)
 
@@ -662,7 +662,7 @@ Applies to AskUserQuestion, user replies, and findings. AskUserQuestion Format i
 - User-turn override wins: if the current message asks for terse / no explanations / just the answer, skip this section.
 - Terse mode (EXPLAIN_LEVEL: terse): no glosses, no outcome-framing layer, shorter responses.
 
-Curated jargon list lives at `C:/Users/Mattia/.pi/agent/gstack-pi/repo/scripts/jargon-list.json` (80+ terms). On the first jargon term you encounter this session, Read that file once; treat the `terms` array as the canonical list. The list is repo-owned and may grow between releases.
+Curated jargon list lives at `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/scripts/jargon-list.json` (80+ terms). On the first jargon term you encounter this session, Read that file once; treat the `terms` array as the canonical list. The list is repo-owned and may grow between releases.
 
 
 ## Completeness Principle — Boil the Ocean
@@ -708,7 +708,7 @@ If you are looping on the same diagnostic, same file, or failed fix variants, ST
 
 ## Question Tuning (skip entirely if `QUESTION_TUNING: false`)
 
-Before each AskUserQuestion, choose `question_id` from `scripts/question-registry.ts` or `{skill}-{slug}`, then run `C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-question-preference --check "<id>"`. `AUTO_DECIDE` means choose the recommended option and say "Auto-decided [summary] → [option] (your preference). Change with /skill:gstack-plan-tune." `ASK_NORMALLY` means ask.
+Before each AskUserQuestion, choose `question_id` from `scripts/question-registry.ts` or `{skill}-{slug}`, then run `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-question-preference --check "<id>"`. `AUTO_DECIDE` means choose the recommended option and say "Auto-decided [summary] → [option] (your preference). Change with /skill:gstack-plan-tune." `ASK_NORMALLY` means ask.
 
 **Embed the question_id as a marker in the question text** so hooks can identify it deterministically (plan-tune cathedral T14 / D18 progressive markers). Append `<gstack-qid:{question_id}>` somewhere in the rendered question (the leading line or trailing line is fine; the marker doesn't render visibly to the user when wrapped in HTML-style angle brackets, but the hook strips it). Without the marker the PreToolUse enforcement hook treats the AUQ as observed-only and never auto-decides — so always include it when the question matches a registered `question_id`.
 
@@ -716,7 +716,7 @@ Before each AskUserQuestion, choose `question_id` from `scripts/question-registr
 
 After answer, log best-effort (PostToolUse hook also captures deterministically when installed; dedup on (source, tool_use_id) handles double-writes):
 ```bash
-C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-question-log '{"skill":"document-release","question_id":"<id>","question_summary":"<short>","category":"<approval|clarification|routing|cherry-pick|feedback-loop>","door_type":"<one-way|two-way>","options_count":N,"user_choice":"<key>","recommended":"<key>","session_id":"'"$_SESSION_ID"'"}' 2>/dev/null || true
+C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-question-log '{"skill":"document-release","question_id":"<id>","question_summary":"<short>","category":"<approval|clarification|routing|cherry-pick|feedback-loop>","door_type":"<one-way|two-way>","options_count":N,"user_choice":"<key>","recommended":"<key>","session_id":"'"$_SESSION_ID"'"}' 2>/dev/null || true
 ```
 
 For two-way questions, offer: "Tune this question? Reply `tune: never-ask`, `tune: always-ask`, or free-form."
@@ -725,7 +725,7 @@ User-origin gate (profile-poisoning defense): write tune events ONLY when `tune:
 
 Write (only after confirmation for free-form):
 ```bash
-C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-question-preference --write '{"question_id":"<id>","preference":"<pref>","source":"inline-user","free_text":"<optional original words>"}'
+C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-question-preference --write '{"question_id":"<id>","preference":"<pref>","source":"inline-user","free_text":"<optional original words>"}'
 ```
 
 Exit code 2 = rejected as not user-originated; do not retry. On success: "Set `<id>` → `<preference>`. Active immediately."
@@ -745,7 +745,7 @@ Escalate after 3 failed attempts, uncertain security-sensitive changes, or scope
 Before completing, if you discovered a durable project quirk or command fix that would save 5+ minutes next time, log it:
 
 ```bash
-C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-learnings-log '{"skill":"SKILL_NAME","type":"operational","key":"SHORT_KEY","insight":"DESCRIPTION","confidence":N,"source":"observed"}'
+C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-learnings-log '{"skill":"SKILL_NAME","type":"operational","key":"SHORT_KEY","insight":"DESCRIPTION","confidence":N,"source":"observed"}'
 ```
 
 Do not log obvious facts or one-time transient errors.
@@ -764,14 +764,14 @@ _TEL_END=$(date +%s)
 _TEL_DUR=$(( _TEL_END - _TEL_START ))
 rm -f ~/.gstack/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
 # Session timeline: record skill completion (local-only, never sent anywhere)
-C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-timeline-log '{"skill":"SKILL_NAME","event":"completed","branch":"'$(git branch --show-current 2>/dev/null || echo unknown)'","outcome":"OUTCOME","duration_s":"'"$_TEL_DUR"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null || true
+C:/Users/Mattia/.pi/agent/extensions/gstack-pi/runtime/bin/gstack-timeline-log '{"skill":"SKILL_NAME","event":"completed","branch":"'$(git branch --show-current 2>/dev/null || echo unknown)'","outcome":"OUTCOME","duration_s":"'"$_TEL_DUR"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null || true
 # Local analytics (gated on telemetry setting)
 if [ "$_TEL" != "off" ]; then
 echo '{"skill":"SKILL_NAME","duration_s":"'"$_TEL_DUR"'","outcome":"OUTCOME","browse":"USED_BROWSE","session":"'"$_SESSION_ID"'","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
 fi
 # Remote telemetry (opt-in, requires binary)
-if [ "$_TEL" != "off" ] && [ -x C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-telemetry-log ]; then
-  C:/Users/Mattia/.pi/agent/gstack-pi/repo/bin/gstack-telemetry-log \
+if [ "$_TEL" != "off" ] && [ -x C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-telemetry-log ]; then
+  C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/bin/gstack-telemetry-log \
     --skill "SKILL_NAME" --duration "$_TEL_DUR" --outcome "OUTCOME" \
     --used-browse "USED_BROWSE" --session-id "$_SESSION_ID" 2>/dev/null &
 fi
@@ -940,7 +940,7 @@ When significant gaps are found, suggest running `/skill:gstack-document-generat
 
 ---
 
-> **STOP.** Before auditing each doc file and applying updates, polishing CHANGELOG voice, checking cross-doc consistency, cleaning up TODOS, the VERSION bump, and committing (Steps 2-9, after the coverage map in Step 1.5), Read `C:/Users/Mattia/.pi/agent/gstack-pi/repo/document-release/sections/release-body.md` and execute it
+> **STOP.** Before auditing each doc file and applying updates, polishing CHANGELOG voice, checking cross-doc consistency, cleaning up TODOS, the VERSION bump, and committing (Steps 2-9, after the coverage map in Step 1.5), Read `C:/Users/Mattia/.pi/agent/extensions/gstack-pi/source/document-release/sections/release-body.md` and execute it
 > in full. Do not work from memory — that section is the source of truth for this step.
 
 ---
