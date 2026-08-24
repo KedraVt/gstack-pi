@@ -127,10 +127,25 @@ redoing scout work. Paired requirement: the persisted schema needs an explicit v
 On `session_start`, if a workflow is active but the phase instructions were compacted away,
 re-inject via existing `buildResumeContext()`.
 
-### Learnings memory (pi-native gbrain substitute)
+### Learnings memory — CLOSED (no work needed)
 
-Persist per-workflow learnings to `~/.gstack/learnings/<slug>.json`; inject top-N relevant
-learnings into investigate/plan phases. Needs relevance-ranking design before implementation.
+**Resolved 2026-08-24 by direct verification.** HANDOFF.md §6 (WP4) proposed reimplementing
+the memory writers, based on the claim they "were never vendored". That claim was wrong:
+the writers already exist in `source/bin/` (`gstack-learnings-log`, `-question-log`,
+`-telemetry-log`, `-decision-log`) — exactly where the adapted skills' preambles point
+(absolute `source/bin/...` paths with `-x` guards and `|| true` fallbacks). Roundtrip
+verified under Git Bash: write exit 0, valid JSONL with auto `ts`, `gstack-learnings-search`
+(the vendored reader) returns entries, invalid types rejected exit 1 (fail-loud), duplicate
+key+type resolves latest-wins at read time. **Nothing to implement.**
+
+Residual notes:
+- Writers validate via `bun -e`, so bun is a **runtime** dependency for skill memory, not
+  just updates (documented in README Requirements).
+- `update.sh` step 7b already warns if these go missing from `source/bin`.
+- Minor: `gstack-question-log` accepts malformed ad-hoc question ids (e.g. `"x"`) without
+  rejection — lenient but harmless; upstream contract keeps it log-only.
+- Read-side injection into phases (`GSTACK_PI_LEARNINGS`) remains a *separate*, optional
+  future idea; ranking only matters if that ever ships.
 
 ### Skill promotions
 
@@ -140,7 +155,32 @@ learnings into investigate/plan phases. Needs relevance-ranking design before im
 - **skillify-assisted digests** — use the `gstack-skillify` methodology to semi-automate
   distilling new upstream skills into `skills-distilled/`.
 
-## Efficiency plan follow-ups (deferred by EFFICIENCY_PLAN v3.1 — implemented except these)
+### Browse commands tier-3 (deferred from the WP1 regeneration)
+
+Deferred during planning (2026-08-24) to keep the tool surface minimal; revisit when a
+real workflow needs them. All are supported by the browse binary — adding one is an
+`INCLUDE` entry in `scripts/gen-tools.ts` plus a `buildArgs` case:
+
+- **`watch`** — snapshot on DOM mutation; removes wait+retry churn on SPA re-renders.
+  Worth it only once SPA QA volume justifies it.
+- **`cdp`** — raw CDP escape hatch with server-side allowlist, for what Playwright does
+  not abstract (geolocation emulation, coverage profiling). Power tool; document
+  guardrails before exposing.
+- **`tab-each`** — run a command across all tabs. Multi-tab QA convenience only.
+- **`domain-skill` / browser-skills subsystem** — reusable site-specific automation
+  recipes. A whole subsystem (see upstream `browser-skills/`); consider only if the same
+  app is QA-ed repeatedly.
+
+### Decision log (event-sourced) — requires vendoring upstream lib
+
+Implement `runtime/bin/gstack-decision-log` + `gstack-decision-search` per the upstream
+contracts (`bin/gstack-decision-log`: append / `--supersede <id>` / `--redact <id>` /
+`--compact`; event log + bounded `decisions.active.json` snapshot; scope-filtered reads by
+branch/issue; strictly non-interactive; HIGH-secret rejection). Blocked on vendoring
+upstream `lib/gstack-decision.ts` (~200 lines TS + deps: `lib/bin-context`). Highest-value
+consumer: plan-gate rationale persistence and `/gstack retro` (also still open above).
+
+## Efficiency plan follow-ups (deferred by efficiency plan v3.1, preserved as commit `f06870a` in git history — the plan file itself was deleted; everything it contained is either shipped or listed below)
 
 - **Phase-level parallel waves** — parallelism must live at the `WorkflowPhase` level, not on
   chain steps (the only real chain, investigate/root-cause, must stay sequential; the
@@ -163,6 +203,24 @@ learnings into investigate/plan phases. Needs relevance-ranking design before im
 - **Skip extension to other workflows** — the structural-skip pattern (marker-in-HANDOFF +
   file-existence guards + never-skippable validate step) currently covers investigate
   root-cause and the QA fix loop only.
+
+## Rejected proposals (2026-08-24 capability audit — do not re-propose without new evidence)
+
+- **ML prompt-injection classifier (L4 sidecar)** — 112MB model, extra process, crash
+  blast-radius inside pi's event loop, for a single-user threat model. L1–L3 envelope +
+  SECURITY system-prompt section (HANDOFF §4) cover the realistic risk.
+- **pair-agent / ngrok remote browser tunnel** — no single-machine use case; large attack
+  surface (dual-listener, scoped tokens).
+- **GStack Browser Chrome extension** — separate distribution + maintenance; headless
+  daemon already covers QA.
+- **gbrain / PGLite knowledge brain** — heavy dependency overlapping the learnings
+  memory; revisit only if WP4 learnings prove valuable in practice.
+- **SKILL.md template generation (`gen-skill-docs` port)** — solves doc drift we do not
+  have: `tools.generated.ts` is generated from source; digests are methodology, not
+  command references.
+- **Full egress receipt ledger** — designed for upstream's dozens of off-machine sinks;
+  ours are two (binary download, update-check). A log line suffices.
+- **Multi-host abstraction (`hosts/`)** — meaningless for a pi-only extension.
 
 ## Notes
 

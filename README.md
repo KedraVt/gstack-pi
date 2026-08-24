@@ -20,7 +20,7 @@ One extension, two layers:
 ## Requirements
 
 - [pi](https://github.com/earendil-works/pi) >= 0.82.0
-- For updates only: [Bun](https://bun.sh) >= 1.3.0 + Git Bash (Windows)
+- For updates **and skill memory scripts**: [Bun](https://bun.sh) >= 1.3.0 + Git Bash (Windows). The bundled skills' operational-memory preamble (`gstack-telemetry-log`, `gstack-learnings-log`, `gstack-question-log`, …) executes bash wrappers from `source/bin/` that validate via `bun -e` — verified working 2026-08-24 (write → search roundtrip, fail-loud validation, latest-wins dedup). Without bun those calls fail silently (`|| true` guards) and memory writes are dropped; the orchestrator itself is unaffected.
 
 ## Installation
 
