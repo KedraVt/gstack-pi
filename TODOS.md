@@ -114,7 +114,10 @@ when a spec already exists.
 ### Orchestrator: `/gstack status`
 
 Non-interactive printout of the workflow state machine (current phase x/y, results,
-gate/pause state).
+gate/pause state). NOTE — naming: this is a *slash command* over the orchestrator state
+machine and is unrelated to the browser-daemon health tool planned as
+`gstack_daemon_status` (HANDOFF WP1); the `daemon-` prefix on the tool side is the
+deliberate disambiguator.
 
 ### Orchestrator: per-step checkpoint + `WorkflowState` versioning
 

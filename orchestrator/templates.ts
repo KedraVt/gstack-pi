@@ -394,7 +394,7 @@ Stop when: the required flows are covered OR two passes produce no new findings.
 ## CONTEXT
 Goal: {goal} | Branch: {branch}
 
-Use the gstack browser tools (gstack_goto, gstack_snapshot, gstack_click, gstack_screenshot, etc.) to test user flows. Take screenshots as evidence. Report all bugs found with severity.`,
+Use the gstack browser tools to test user flows. Core set: gstack_goto, gstack_snapshot, gstack_click, gstack_fill or gstack_type (form inputs — never declare a form flow tested without exercising its inputs), gstack_wait (settle SPAs before asserting), gstack_console with --errors after each flow (silent JS failures are bugs), gstack_screenshot for evidence; others (gstack_network, gstack_select, gstack_scroll, ...) as needed. Report all bugs found with severity.`,
     "review": `## DELIVERABLE
 Findings with severity + file:line + concrete failure scenario, a scope check, and a final verdict APPROVE or REQUEST_CHANGES.
 
@@ -473,7 +473,7 @@ Stop when: the required adjacent flows are covered OR two passes produce no new 
 ## CONTEXT
 Goal: {goal} | Branch: {branch}
 
-Use browser tools to test adjacent functionality. Verify the fix didn't break other flows.`,
+Use browser tools to test adjacent functionality — same core set as the qa phase (gstack_goto, gstack_snapshot, gstack_click, gstack_fill/gstack_type, gstack_wait, gstack_console --errors). Verify the fix didn't break other flows.`,
     "document": `## DELIVERABLE
 A DOC REPORT block (files reviewed, updated, generated, remaining gaps) plus doc updates committed as their own atomic commit.
 
