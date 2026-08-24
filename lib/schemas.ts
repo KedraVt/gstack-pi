@@ -282,7 +282,10 @@ const S = {
       description:
         'JSON array of [cmd, ...args] batches, e.g. [["goto","https://x"],["click","@e3"],["text","h1"]]. Executed in order, stops at first error, one result per command. Payload travels via stdin.',
     }),
-    ...COMMON,
+    // Deliberately NO extraArgs here: argv extras are meaningless when the
+    // payload travels via stdin, and passing them would silently break the
+    // stdin contract (review finding #4). Only the shared timeout applies.
+    timeoutMs: Type.Optional(Type.Number()),
   }),
   dialog: Type.Object({ ...COMMON }),
   perf: Type.Object({

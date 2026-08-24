@@ -746,7 +746,9 @@ export function buildArgs(cmd: string, params: any): string[] {
     case "chain":
       // Payload travels via stdin (see execute special case below). Argv is
       // the wrong transport for a JSON batch on Windows (length + quoting).
-      break;
+      // Early return also skips the shared extraArgs append: chain accepts
+      // none (schema omits the field — review finding #4).
+      return args;
 
     case "dialog":
     case "status":
@@ -864,10 +866,12 @@ export function registerGstackTools(pi: ExtensionAPI) {
         }
 
         const { body } = cap(stdout, params);
-        // WP1 §3.3 + decision 2026-08-24: chain batches bypass the daemon's
-        // envelope server-side (`command !== "chain"`), so the extension wraps
-        // them itself with OUR plain-ASCII sentinels (lib/content-security.ts) —
-        // no coupling to minified bundle constants.
+        // WP1 §3.3 + decision 2026-08-24: the daemon skips its *envelope* for
+        // chain results (server-side `command !== "chain"` guard) — per-sub-
+        // command content filters still run server-side, but the batch RESULT
+        // arrives unwrapped, so the extension adds its own envelope using OUR
+        // plain-ASCII sentinels (lib/content-security.ts; no coupling to
+        // minified bundle constants).
         let finalBody = body;
         if (t.gstackCmd === "chain") {
           finalBody =

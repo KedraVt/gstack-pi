@@ -121,7 +121,7 @@ reads the daemon's dialog ring buffer, `gstack_perf` returns page metrics, and
 `gstack_daemon_status` / `gstack_daemon_restart` expose daemon health and recovery
 (the `daemon-` prefix distinguishes them from the orchestrator's own `/gstack status`).
 
-Full list: see `tools.generated.ts` (60 commands from the gstack browse CLI).
+Full list: see `tools.generated.ts` (65 commands from the gstack browse CLI).
 
 ### Skills (23)
 
@@ -218,7 +218,7 @@ This regenerates `tools.generated.ts` and `lib/commands.generated.ts` from `sour
 ```
 gstack-pi/
 ├── index.ts                 Entry: registers tools + orchestrator
-├── tools.generated.ts       60 browser tool registrations (auto-generated)
+├── tools.generated.ts       65 browser tool registrations (auto-generated)
 ├── lib/
 │   ├── browse.ts            Binary resolution + subprocess spawn
 │   ├── download.ts          Auto-download browse binary from GitHub Releases
@@ -296,7 +296,7 @@ Deferred ideas live in `TODOS.md` (absorbed the old `FUTURE_UPDATES.md`).
 ## Security
 
 - Browse binary spawned with `shell: false` (no shell injection)
-- Command allowlist: only the 60 registered commands can execute
+- Command allowlist: only the 65 registered commands can execute
 - Output capped at 32,000 chars per tool call
 - `cookie-import-browser` requires explicit user confirmation
 - Input router never blocks (`action: "handled"` is never returned)

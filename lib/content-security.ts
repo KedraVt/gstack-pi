@@ -4,8 +4,10 @@
  * The bundled browse daemon envelopes page-derived output with its own
  * "BEGIN/END UNTRUSTED WEB CONTENT" markers (containing zero-width characters)
  * for direct page-content commands, but nothing told the model what those
- * markers mean, and batch output (WP1's `chain`) bypasses daemon wrapping
- * entirely. This module gives the extension a self-owned layer:
+ * markers mean, and batch results (WP1's `chain`) arrive without an envelope —
+ * the server-side `command !== "chain"` guard skips wrapping for them (the
+ * per-sub-command content filters still run; it's only the envelope that is
+ * skipped). This module gives the extension a self-owned layer:
  *
  *  - UNTRUSTED_BEGIN / UNTRUSTED_END: OUR sentinel pair, plain ASCII on
  *    purpose — no coupling to minified bundle constants, no drift after
@@ -30,6 +32,7 @@ export const PAGE_CONTENT_COMMANDS: ReadonlySet<string> = new Set([
   "attrs",
   "media",
   "console",
+  "dialog",
   "ux-audit",
   "snapshot",
 ]);

@@ -220,18 +220,31 @@ export function cap(
   params: unknown,
 ): { body: string; truncated: boolean } {
   if (stdout.length <= CAP) return { body: stdout, truncated: false };
-  const p = (params ?? {}) as { selector?: string; ref?: string };
-  const scope = p.selector ?? p.ref ?? "(full document)";
+  const p = (params ?? {}) as { selector?: string; ref?: string; commands?: unknown };
   const total = stdout.length;
   const head = stdout.slice(0, CAP);
-  const hint =
-    "\n…[truncated at " +
-    CAP +
-    "/" +
-    total +
-    " chars. Last selector scope: " +
-    scope +
-    ". Re-run with a narrower --selector targeting the remaining region, or use gstack_attrs/gstack_inspect to find the next anchor.]\n";
+  // Chain batches aggregate multiple sub-commands: a single "--selector" hint
+  // would be meaningless there — point at re-running the interesting
+  // sub-command individually instead (review finding #5).
+  let hint: string;
+  if (Array.isArray(p.commands)) {
+    hint =
+      "\n…[truncated at " +
+      CAP +
+      "/" +
+      total +
+      " chars. Batch output too large for one result: re-run the interesting sub-command individually (e.g. gstack_snapshot / gstack_text with a narrower --selector), or split the batch.]\n";
+  } else {
+    const scope = p.selector ?? p.ref ?? "(full document)";
+    hint =
+      "\n…[truncated at " +
+      CAP +
+      "/" +
+      total +
+      " chars. Last selector scope: " +
+      scope +
+      ". Re-run with a narrower --selector targeting the remaining region, or use gstack_attrs/gstack_inspect to find the next anchor.]\n";
+  }
   return { body: head + hint, truncated: true };
 }
 

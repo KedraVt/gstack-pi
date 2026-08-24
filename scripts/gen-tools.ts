@@ -160,6 +160,13 @@ function main() {
         if (["extraArgs", "timeoutMs", "ref", "selector", "path", "file", "url", "url1", "url2", "id", "name", "value", "expr", "prop", "action"].includes(f)) {
           continue; // skip common structural / positional fields
         }
+        // WP1: verified-benign mismatches. restart: upstream usage ("Restart
+        // server") predates --force-restart, which we verified live. chain is
+        // exempt entirely: its payload travels via stdin (schema fields are
+        // not CLI flags at all), so flag-matching against the usage string is
+        // meaningless for it.
+        if (`${kebab}.${f}` === "restart.force") continue;
+        if (kebab === "chain") continue;
         // Map field camel/snake -> kebab flag (e.g. cursorInteractive -> cursor-interactive, depth -> depth)
         const flagKebab = f.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
         // Check if --flag, -flag, or short flag (single char) exists in usage/description
@@ -509,7 +516,9 @@ export function buildArgs(cmd: string, params: any): string[] {
     case "chain":
       // Payload travels via stdin (see execute special case below). Argv is
       // the wrong transport for a JSON batch on Windows (length + quoting).
-      break;
+      // Early return also skips the shared extraArgs append: chain accepts
+      // none (schema omits the field — review finding #4).
+      return args;
 
     case "dialog":
     case "status":
@@ -627,10 +636,12 @@ export function registerGstackTools(pi: ExtensionAPI) {
         }
 
         const { body } = cap(stdout, params);
-        // WP1 §3.3 + decision 2026-08-24: chain batches bypass the daemon's
-        // envelope server-side (\`command !== "chain"\`), so the extension wraps
-        // them itself with OUR plain-ASCII sentinels (lib/content-security.ts) —
-        // no coupling to minified bundle constants.
+        // WP1 §3.3 + decision 2026-08-24: the daemon skips its *envelope* for
+        // chain results (server-side \`command !== "chain"\` guard) — per-sub-
+        // command content filters still run server-side, but the batch RESULT
+        // arrives unwrapped, so the extension adds its own envelope using OUR
+        // plain-ASCII sentinels (lib/content-security.ts; no coupling to
+        // minified bundle constants).
         let finalBody = body;
         if (t.gstackCmd === "chain") {
           finalBody =

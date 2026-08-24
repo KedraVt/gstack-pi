@@ -53,7 +53,7 @@ describe("content-security (WP2)", () => {
   });
 
   test("PAGE_CONTENT_COMMANDS matches the registered kebab-case command names", () => {
-    for (const cmd of ["text", "html", "links", "forms", "accessibility", "attrs", "media", "console", "ux-audit", "snapshot"]) {
+    for (const cmd of ["text", "html", "links", "forms", "accessibility", "attrs", "media", "console", "dialog", "ux-audit", "snapshot"]) {
       assert.ok(PAGE_CONTENT_COMMANDS.has(cmd), `missing ${cmd}`);
     }
     assert.ok(!PAGE_CONTENT_COMMANDS.has("goto"), "goto is not page content");
