@@ -116,7 +116,7 @@ when a spec already exists.
 Non-interactive printout of the workflow state machine (current phase x/y, results,
 gate/pause state). NOTE — naming: this is a *slash command* over the orchestrator state
 machine and is unrelated to the browser-daemon health tool planned as
-`gstack_daemon_status` (HANDOFF WP1); the `daemon-` prefix on the tool side is the
+`gstack_daemon_status` (upgrade-plan WP1, commit `1cae721`); the `daemon-` prefix on the tool side is the
 deliberate disambiguator.
 
 ### Orchestrator: per-step checkpoint + `WorkflowState` versioning
@@ -132,7 +132,8 @@ re-inject via existing `buildResumeContext()`.
 
 ### Learnings memory — CLOSED (no work needed)
 
-**Resolved 2026-08-24 by direct verification.** HANDOFF.md §6 (WP4) proposed reimplementing
+**Resolved 2026-08-24 by direct verification.** The upgrade plan's WP4 (HANDOFF.md §6,
+preserved as commit `1cae721`) proposed reimplementing
 the memory writers, based on the claim they "were never vendored". That claim was wrong:
 the writers already exist in `source/bin/` (`gstack-learnings-log`, `-question-log`,
 `-telemetry-log`, `-decision-log`) — exactly where the adapted skills' preambles point
@@ -211,7 +212,7 @@ consumer: plan-gate rationale persistence and `/gstack retro` (also still open a
 
 - **ML prompt-injection classifier (L4 sidecar)** — 112MB model, extra process, crash
   blast-radius inside pi's event loop, for a single-user threat model. L1–L3 envelope +
-  SECURITY system-prompt section (HANDOFF §4) cover the realistic risk.
+  SECURITY system-prompt section (upgrade-plan WP2, commit `5c9efa1`) cover the realistic risk.
 - **pair-agent / ngrok remote browser tunnel** — no single-machine use case; large attack
   surface (dual-listener, scoped tokens).
 - **GStack Browser Chrome extension** — separate distribution + maintenance; headless
