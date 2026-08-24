@@ -275,6 +275,27 @@ const S = {
   }),
   handoff: Type.Object({ message: Type.Optional(Type.String()), ...COMMON }),
   resume: Type.Object({ ...COMMON }),
+  // --- WP1 (HANDOFF §3): batch + daemon lifecycle surface --------------------
+  chain: Type.Object({
+    commands: Type.Array(Type.Array(Type.String()), {
+      minItems: 1,
+      description:
+        'JSON array of [cmd, ...args] batches, e.g. [["goto","https://x"],["click","@e3"],["text","h1"]]. Executed in order, stops at first error, one result per command. Payload travels via stdin.',
+    }),
+    ...COMMON,
+  }),
+  dialog: Type.Object({ ...COMMON }),
+  perf: Type.Object({
+    selector: Type.Optional(Type.String({ description: "CSS selector (positional target)" })),
+    ...COMMON,
+  }),
+  status: Type.Object({ ...COMMON }),
+  restart: Type.Object({
+    force: Type.Optional(
+      Type.Boolean({ description: "--force-restart: also kill a live-but-busy daemon" }),
+    ),
+    ...COMMON,
+  }),
   reload: Type.Object({ ...COMMON }),
   back: Type.Object({ ...COMMON }),
   forward: Type.Object({ ...COMMON }),

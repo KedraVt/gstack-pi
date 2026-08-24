@@ -75,6 +75,58 @@ test("tools.generated.ts wires the strict-content hook into every tool's execute
   assert.match(src, /let finalBody = body;/);
 });
 
+// --- WP1: batch + daemon lifecycle surface -----------------------------------
+
+describe("WP1 tool expansion", () => {
+  const generatedSrc = () => readFileSync(new URL("../tools.generated.ts", import.meta.url), "utf8");
+
+  test("allowlist contains exactly the 65 expected commands", async () => {
+    const mod = await import("../lib/commands.generated.ts");
+    const set = new Set<string>(mod.GSTACK_COMMANDS as string[]);
+    assert.equal(set.size, 65, `expected 65 commands, got ${set.size}`);
+    for (const c of ["chain", "dialog", "perf"]) {
+      assert.ok(set.has(c), `missing ${c}`);
+    }
+  });
+
+  test("daemon tools carry disambiguated names but map to plain CLI commands", () => {
+    const src = generatedSrc();
+    assert.match(src, /name: "gstack_daemon_status"/);
+    assert.match(src, /name: "gstack_daemon_restart"/);
+    assert.match(src, /gstackCmd: "status"/);
+    assert.match(src, /gstackCmd: "restart"/);
+  });
+
+  test("buildArgs(chain) returns [] — payload travels via stdin, not argv", async () => {
+    const mod = await import("../tools.generated.ts");
+    const args = mod.buildArgs("chain", { commands: [["goto", "https://x"], ["click", "@e3"]] });
+    assert.deepEqual(args, []);
+  });
+
+  test("chain execute validates sub-commands and serializes via stdin", () => {
+    const src = generatedSrc();
+    assert.ok(src.includes('if (t.gstackCmd === "chain") {'), "missing chain special case");
+    assert.ok(src.includes("!isAllowed(c[0])"), "missing per-sub-command allowlist validation");
+    assert.ok(src.includes("JSON.stringify(params.commands)"), "missing stdin serialization");
+    assert.ok(src.includes("runOpts.timeoutMs = 120000"), "missing 120s batch default timeout");
+  });
+
+  test("chain output is enveloped with our ASCII sentinels extension-side", () => {
+    const src = generatedSrc();
+    assert.ok(
+      src.includes("UNTRUSTED WEB CONTENT (chain batch)"),
+      "missing chain envelope preamble",
+    );
+    assert.match(src, /UNTRUSTED_BEGIN \+ "\\n" \+ finalBody \+ "\\n" \+ UNTRUSTED_END/);
+  });
+
+  test("chain tool description teaches the batching pattern", () => {
+    const src = generatedSrc();
+    assert.match(src, /Run a sequence of browse commands in ONE call/);
+    assert.match(src, /saves one LLM turn per command/);
+  });
+});
+
 // --- Config flag ------------------------------------------------------------
 
 test("GSTACK_PI_STRICT_CONTENT defaults off and honors on/off", async () => {

@@ -100,7 +100,7 @@ export interface RunResult {
 export function runBrowse(
   cmd: string,
   args: string[],
-  opts: { signal?: AbortSignal; timeoutMs?: number; binaryPath?: string } = {},
+  opts: { signal?: AbortSignal; timeoutMs?: number; binaryPath?: string; stdin?: string } = {},
 ): Promise<RunResult> {
   const bin = opts.binaryPath
     ? { path: opts.binaryPath }
@@ -121,6 +121,25 @@ export function runBrowse(
       windowsHide: true,
     });
     let killedByTimeout = false;
+
+    // WP1 §3.1: batch payloads (`chain`) travel via stdin, never argv —
+    // argv-length limits and Windows quoting make argv the wrong transport
+    // for a JSON batch. EPIPE when the child exits early must not crash the
+    // host (this extension shares pi's process; 2026-08-23 crash class), so:
+    //   - sync write wrapped in try/catch, explicit .end()
+    //   - async stream errors swallowed via an "error" listener (an uncaught
+    //     stream "error" event throws and would kill pi).
+    if (opts.stdin !== undefined) {
+      child.stdin?.on("error", () => {
+        /* EPIPE / early-exit: result is read from stdout/stderr/exit code */
+      });
+      try {
+        child.stdin?.write(opts.stdin);
+        child.stdin?.end();
+      } catch {
+        /* see above */
+      }
+    }
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];

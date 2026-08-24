@@ -13,7 +13,11 @@ import { execSync } from "node:child_process";
 import * as path from "node:path";
 
 describe("static type safety gate", () => {
-  test("tsc --noEmit reports no errors", () => {
+  // 30s budget: tsc on this repo takes 3-6s warm, but CI/cold-cache machines
+  // and parallel test runs have pushed it past node:test's default 5s — a
+  // timeout here is indistinguishable from a real type error and blocks every
+  // commit. Generous ceiling; a genuine hang still fails via execSync.
+  test("tsc --noEmit reports no errors", { timeout: 30_000 }, () => {
     const cwd = path.resolve(process.cwd());
     try {
       execSync("bunx tsc --noEmit", { cwd, stdio: ["pipe", "pipe", "pipe"], encoding: "utf-8" });

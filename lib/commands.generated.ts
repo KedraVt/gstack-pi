@@ -62,6 +62,11 @@ export const GSTACK_COMMANDS = [
   "skill",
   "handoff",
   "resume",
+  "chain",
+  "dialog",
+  "perf",
+  "status",
+  "restart",
 ];
 
 export const ALLOWED_COMMANDS: ReadonlySet<string> = new Set(GSTACK_COMMANDS);
