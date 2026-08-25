@@ -84,6 +84,48 @@ const REGISTRY: Record<string, RegistryEntry> = {
     dod: "DoD: `VALIDATED: <mechanism @ file:line>` first line, then exact files to change + regression risks; `REFUTED: <reason>` first line if the cause does not hold. BP: no fix without a validated mechanism confirmed against code; minimal diff only; every fix ships a regression test that fails before and passes after.",
     // vendored digest derived from the investigate methodology's Phase 4 — no upstream SKILL.md
   },
+
+  // --- sprint workflow digests (provenance: .agents-clean, staged 2026-08-24) ---
+  "gstack-sprint-capability": {
+    summary: "User-story writing + story→engineering-constraints translation: boolean-checkable invariants, explicit trust boundaries, non-goals",
+    dod: "DoD: user-story_XX.md states goal/actor/outcome with falsifiable acceptance criteria; product-capability_XX.md lists invariants as boolean conditions, enumerated trust boundaries, non-goals. BP: constraints testable, no vague adjectives, every boundary named.",
+  },
+  "gstack-sprint-system-design": {
+    summary: "DDD system design: binding ubiquitous-language glossary, aggregates with boolean invariants, context mapping, contract immutability",
+    dod: "DoD: system-design_XX.md contains a Ubiquitous Language glossary table (BINDING for all dev agents), domains with data flows, aggregates+invariants as boolean conditions, unhappy-path error payloads. BP: contracts immutable once consumers exist; storage advisory (SQLite prototype / PostgreSQL concurrent production).",
+  },
+  "gstack-sprint-adr": {
+    summary: "Architecture decision records: decision/context/consequences format, append-only sprint log",
+    dod: "DoD: each ADR records Decision / Context / Consequences + status; only significant architectural changes; ADR-log_XX.md append-only, never rewritten. BP: one record per decision; note rejected alternatives when they were real.",
+  },
+  "gstack-sprint-tasks": {
+    summary: "Atomic task backlog: inputs/payloads/constraints/unhappy-paths/falsifiable success conditions, role-assigned with dependencies",
+    dod: "DoD: tasks_XX.md entries atomic (one verifiable outcome each) specifying inputs, constraints, unhappy paths, falsifiable success condition, owning role, dependencies. BP: 'build the backend' is not a task; every success condition externally checkable.",
+  },
+  "gstack-sprint-tdd": {
+    summary: "Test-first discipline: red-green-refactor, AAA structure, prove-it bug reproduction, anti-pattern avoidance",
+    dod: "DoD: failing test precedes production code; AAA structure; bug fixes start from a demonstrably failing test; ≥80% coverage on new code paths. BP: no production code without a red test; strip debug artifacts before claiming green.",
+  },
+  "gstack-sprint-verification": {
+    summary: "Iron Law: completion claims require fresh verification evidence — run it now, read the output, cite it",
+    dod: "DoD: every completion claim cites command output produced during the current report; no 'should work' language; re-run after any late change. BP: evidence before claims, applied universally (code/tests/docs).",
+  },
+  "gstack-sprint-appsec": {
+    summary: "AppSec review: STRIDE-lite threat model over new trust boundaries, secrets hygiene, injection prevention, actionable remediations",
+    dod: "DoD: each finding names the abused boundary, failure mode, blast radius, and a copy-paste-ready fix; zero hardcoded secrets; parameterized queries; validated inputs at every boundary. BP: no finding without a fix.",
+  },
+  "gstack-sprint-docker": {
+    summary: "Conditional Docker audit: multi-stage builds, pinned bases, non-root runtime, resource limits, network isolation",
+    dod: "DoD: conditional — applies ONLY when repo ships Dockerfile/compose; multi-stage build, pinned base images, non-root runtime, resource limits, healthchecks, no secrets in layers. BP: never introduce Docker into a project that does not use it.",
+  },
+  "gstack-sprint-qa": {
+    summary: "QA triage GREEN/RED/ORANGE, Testability Blockers, Save-Point git pattern, evidence-first reporting",
+    dod: "DoD: qa-artifact carries `## STATUS == GREEN|RED|ORANGE` (+ status frontmatter); ORANGE requires a Testability Blockers section listing missing selectors; every RED finding has repro steps + evidence; QA holds no commit authority. BP: commit only after verified GREEN; never destructive git operations; branch-per-task.",
+  },
+  "gstack-sprint-pipeline": {
+    summary: "Conditional CI/CD authoring audit: least privilege, pinned versions, vault secrets, reproducible builds, rollback story",
+    dod: "DoD: conditional — applies ONLY when authoring/modifying CI configs; least-privilege tokens, pinned action/tool versions, platform-vault secrets (never inline), fail-fast ordering, documented rollback. BP: reproducible builds over snowflake runners.",
+  },
 };
 
 export function getSkillIds(): string[] {
