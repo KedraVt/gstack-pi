@@ -62,6 +62,7 @@ export const PHASE_EXPECTATIONS: Record<string, Record<string, readonly string[]
     "code-review": ["approved"],
     "security-review": ["approved", "rejected"],
     "docker-build": ["success", "failed"],
+    "docker-security": ["approved", "rejected"],
   },
 };
 
@@ -72,8 +73,10 @@ export interface VerdictParseOutcome {
 }
 
 /**
- * Parse verdict variable/value pairs from the LAST `## HANDOFF` section of a
- * subagent output. Returns `{parsed: null}` when no valid verdict set can be
+ * Parse verdict variable/value pairs from the `## HANDOFF` section of a
+ * subagent output (containment starts at the FIRST `## HANDOFF` marker and
+ * runs to end-of-text; chain steps are parsed separately then merged — see
+ * mergeParseOutcomes). Returns `{parsed: null}` when no valid verdict set can be
  * extracted: missing HANDOFF, no known-variable lines, or any known variable
  * carrying an out-of-whitelist (hedged/malformed) value.
  */
@@ -137,6 +140,46 @@ export function parseHandoffVerdicts(output: string): VerdictParseOutcome {
   return { parsed: { verdicts, severity }, lines };
 }
 
+/**
+ * Merge per-step parse outcomes across a chain (review fix W1): parsing the
+ * JOINED outputs would keep only the LAST ## HANDOFF once the total exceeds
+ * extractHandoff's whole-output threshold — silently dropping earlier chain
+ * steps' verdicts and parking every realistic gate run. Each step parses
+ * independently; merged maps conflict on any variable/severity disagreement
+ * ⇒ null (preserves BUG-4 contradiction semantics).
+ */
+export function mergeParseOutcomes(outcomes: VerdictParseOutcome[]): VerdictParseOutcome {
+  const lines = outcomes.flatMap((o) => o.lines);
+  const parsedResults = outcomes.map((o) => o.parsed);
+  if (parsedResults.every((p) => p === null)) {
+    return { parsed: null, lines };
+  }
+  // Any step failing to produce a trustworthy verdict ⇒ null overall:
+  // a gate needs EVERY chain step's verdict to route deterministically.
+  if (parsedResults.some((p) => p === null)) {
+    return { parsed: null, lines };
+  }
+  const verdicts: Record<string, string> = {};
+  let severity: VerdictSeverity | undefined;
+  for (const p of parsedResults as NonNullable<(typeof parsedResults)[number]>[]) {
+    for (const [variable, value] of Object.entries(p.verdicts)) {
+      if (verdicts[variable] !== undefined && verdicts[variable] !== value) {
+        return { parsed: null, lines }; // cross-step contradiction
+      }
+      verdicts[variable] = value;
+    }
+    if (p.severity !== undefined) {
+      if (severity !== undefined && severity !== p.severity) {
+        return { parsed: null, lines };
+      }
+      severity = p.severity;
+    }
+  }
+  if (Object.keys(verdicts).length === 0) return { parsed: null, lines };
+  if (verdicts["security-review"] === "rejected" && !severity) return { parsed: null, lines };
+  return { parsed: { verdicts, severity }, lines };
+}
+
 // --- Dual-channel artifact cross-check --------------------------------------
 
 /** Artifact tail window for STATUS-line confirmation (plan E2). */
@@ -184,10 +227,15 @@ export function artifactForVariable(variable: string, cwd: string, sprintNumber?
           .readdirSync(cwd)
           .filter((f) =>
             sprintNumber !== undefined
-              ? new RegExp(`^software-architect-artifact_${pad2(sprintNumber)}_\\d+\\.md$`).test(f)
+              ? new RegExp(`^software-architect-artifact_${pad2(sprintNumber)}_(\\d+)\\.md$`).test(f)
               : /^software-architect-artifact_\d+\.md$/.test(f),
           )
-          .sort();
+          .sort((a, b) => {
+            // numeric tail sort: _03_10 is newer than _03_2
+            const na = Number(/_(\d+)\.md$/.exec(a)?.[1] ?? 0);
+            const nb = Number(/_(\d+)\.md$/.exec(b)?.[1] ?? 0);
+            return na - nb;
+          });
         return files.length > 0 ? [path.join(cwd, files[files.length - 1])] : [];
       } catch {
         return [];

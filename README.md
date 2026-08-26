@@ -21,6 +21,7 @@ One extension, two layers:
 - **`sprint` workflow (opt-in)** — a 10-phase agile delivery pipeline distilled from `.agents-clean` methodology: understand → user-story → capability → system-design → ⏸ architect gate → backlog → implement → devsecops review → QA verdict → commit/archive. Planning artifacts (`user-story_XX.md`, `system-design_XX.md`, `tasks_XX.md`, …) live in the project root and archive to `.gstack/sprints/sprint_XX/` when the sprint goes green.
 - **Deterministic verdict routing** — review gates emit machine-parseable verdict lines (`status == red|green|orange`, `security-review == approved|rejected`) inside a `## HANDOFF` section. The orchestrator parses them fail-closed (whitelist-only values, containment-checked), cross-verifies them against the artifact files on disk (dual channel: chat + disk must agree), and routes deterministically — never on the model's say-so.
 - **Security freeze** — a critical/high security rejection parks the whole sprint until a human types the confirmation phrase in the panel; medium/low rejections loop back to implement normally.
+- **Trust boundary note** — dual-channel verification trusts files in the repo root: a malicious repo can pre-plant both channels against a predictable next sprint number. Sprint stamping, anomaly guards, and the hard commit-archive gate raise the bar but do not close within-sprint planting — review gate artifacts before approving.
 - **Bounded loop-backs** — rejected reviews return work to the implementing phase with extracted blocker feedback; after N attempts (configurable) the sprint parks for human decision instead of looping forever.
 - **Unreadable-verdict park** — if a gate's output can't be parsed into a known verdict, the sprint parks WITHOUT burning an attempt; the panel shows only the failing lines so you can approve/loop/inspect deliberately.
 - **Strict BE→FE chain** — implementation runs backend-developer then frontend-developer sequentially per task wave; model tiers (`GSTACK_PI_MODEL_STRONG/FAST`) let judgment phases run on stronger models while mechanical phases stay cheap.
@@ -381,7 +382,7 @@ the root-cause scout->planner chain collapses to ONE validate-only planner step.
 | `GSTACK_PI_SPRINT` | on | registers the sprint workflow; `off` hides it from menu and router entirely |
 | `GSTACK_PI_LOOPBACKS` | on | sprint loop-back engine; `off` ⇒ negative gate verdicts pause instead of retrying |
 | `GSTACK_PI_VERDICTS` | on | deterministic verdict parsing; `off` ⇒ gates rely on human reading, no auto-routing |
-| `GSTACK_PI_SPRINT_MAX_ATTEMPTS` | 4 | shared implement-rerun ceiling across devsecops + QA gates |
+| `GSTACK_PI_SPRINT_MAX_ATTEMPTS` | 4 | consecutive implement-rerun ceiling per review gate (counter resets on gate approval) |
 | `GSTACK_PI_ARCH_MAX_ATTEMPTS` | 5 | system-design rerun ceiling after architect rejections |
 | `GSTACK_PI_MODEL_FAST` / `_STRONG` | unset | model tiers for mechanical vs judgment-heavy phases; unset keeps each agent's own default (inert) |
 | `GSTACK_PI_STRICT_CONTENT` | off | heuristic scan + ASCII-sentinel enveloping of page-content tool output (WP2 defense-in-depth) |

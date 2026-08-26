@@ -174,10 +174,12 @@ export function subagentTimeoutFor(phaseId: string): number {
 }
 
 /**
- * Sprint loop ceilings (plan B5). GSTACK_PI_SPRINT_MAX_ATTEMPTS bounds reruns
- * of the implement phase across BOTH review gates (devsecops + qa, shared
- * budget); GSTACK_PI_SPRINT_ARCH_MAX_ATTEMPTS bounds system-design reruns
- * after architect rejections.
+ * Sprint loop ceilings (plan B5). GSTACK_PI_SPRINT_MAX_ATTEMPTS bounds
+ * CONSECUTIVE implement reruns per review gate: the counter resets when a gate
+ * approves (state.ts), so devsecops and QA each get a fresh ceiling within the
+ * same sprint — worst case ≈ 2× the ceiling total implement runs.
+ * GSTACK_PI_SPRINT_ARCH_MAX_ATTEMPTS bounds system-design reruns after
+ * architect rejections.
  */
 export function sprintMaxAttempts(): number {
   return numberEnv("GSTACK_PI_SPRINT_MAX_ATTEMPTS", 4) as number;

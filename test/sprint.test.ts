@@ -10,7 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createState, advancePhase, routeVerdict, parkForUnreadableVerdict, forceApproveParked, returnParkedWithContext, isSecurityFrozen, unfreeze, forceContinuePastGate } from "../orchestrator/state.ts";
 import { getAllWorkflows, getWorkflow } from "../orchestrator/workflows.ts";
-import { parseHandoffVerdicts, verifyArtifactVerdicts, extractBlockers, buildRetryFeedback, KNOWN_VARIABLES } from "../orchestrator/verdicts.ts";
+import { parseHandoffVerdicts, verifyArtifactVerdicts, extractBlockers, buildRetryFeedback, mergeParseOutcomes, KNOWN_VARIABLES } from "../orchestrator/verdicts.ts";
 import { computeNextSprintNumber, pad2, sprintArchiveDir, archivedSprintDirs } from "../orchestrator/sprint.ts";
 import { buildPhaseInstructions, buildDeterministicPlan, retryContextBlock, conditionalSkillIds, glossaryTable, MASTER_DOD } from "../orchestrator/templates.ts";
 import { modelTierFor, sprintMaxAttempts, sprintArchMaxAttempts, timeoutClassFor } from "../orchestrator/config.ts";
@@ -145,9 +145,34 @@ describe("verdict parsing (D1/D4 fail-closed)", () => {
     assert.equal(parseHandoffVerdicts("## HANDOFF\nseverity == high\nseverity == low").parsed, null);
   });
 
-  test("unknown x == y lines are ignored as prose", () => {    const out = parseHandoffVerdicts("## HANDOFF\ncode-review == approved\ncoverage == high");
+  test("unknown x == y lines are ignored as prose", () => {
+    const out = parseHandoffVerdicts("## HANDOFF\ncode-review == approved\ncoverage == high");
     assert.ok(out.parsed);
     assert.deepEqual(Object.keys(out.parsed.verdicts), ["code-review"]);
+  });
+
+  test("chain steps parse INDEPENDENTLY then merge (review W1)", () => {
+    // Realistic sizes: each step >6KB, so joined-output parsing would keep only
+    // the LAST HANDOFF and lose earlier chain steps' verdicts.
+    const big = "x".repeat(7 * 1024);
+    const stepA = `${big}\n## HANDOFF\nVERIFIED FACTS:\naudited diff\ncode-review == approved`;
+    const stepB = `${big}\n## HANDOFF\nVERIFIED FACTS:\nno findings\nsecurity-review == approved\nseverity == low`;
+    const merged = mergeParseOutcomes([parseHandoffVerdicts(stepA), parseHandoffVerdicts(stepB)]);
+    assert.ok(merged.parsed, "both chain steps' verdicts survive the merge");
+    assert.equal(merged.parsed?.verdicts["code-review"], "approved");
+    assert.equal(merged.parsed?.verdicts["security-review"], "approved");
+
+    const conflict = mergeParseOutcomes([
+      parseHandoffVerdicts("## HANDOFF\ncode-review == approved"),
+      parseHandoffVerdicts("## HANDOFF\ncode-review == rejected"),
+    ]);
+    assert.equal(conflict.parsed, null, "cross-step contradiction fails closed");
+
+    const partial = mergeParseOutcomes([
+      parseHandoffVerdicts("## HANDOFF\ncode-review == approved"),
+      parseHandoffVerdicts("## HANDOFF\nno verdict lines here"),
+    ]);
+    assert.equal(partial.parsed, null, "a step without a trustworthy verdict nulls the whole gate");
   });
 
   test("HANDOFF with no known variables ⇒ null", () => {
@@ -210,14 +235,18 @@ describe("dual-channel artifact verification (guard 3)", () => {
     }
   });
 
-  test("software-architect-review resolves to the NEWEST artifact_N", () => {
+  test("software-architect-review resolves to the NEWEST sprint-stamped artifact (W5)", () => {
     const cwd = setup({
-      "software-architect-artifact_1.md": "old\nsoftware-architect-review == rejected\n",
-      "software-architect-artifact_2.md": "new\nsoftware-architect-review == approved\n",
+      "software-architect-artifact_03_1.md": "old\nsoftware-architect-review == rejected\n",
+      "software-architect-artifact_03_2.md": "newer\nsoftware-architect-review == approved\n",
+      "software-architect-artifact_03_10.md": "newest\nsoftware-architect-review == rejected\n",
+      "software-architect-artifact_02_9.md": "other sprint\nsoftware-architect-review == approved\n",
     });
     try {
-      assert.equal(verifyArtifactVerdicts({ verdicts: { "software-architect-review": "approved" } }, cwd), true);
-      assert.equal(verifyArtifactVerdicts({ verdicts: { "software-architect-review": "rejected" } }, cwd), false, "stale artifact must not confirm");
+      // numeric tail sort: _03_10 is newer than _03_2; other sprints ignored
+      assert.equal(verifyArtifactVerdicts({ verdicts: { "software-architect-review": "rejected" } }, cwd, 3), true);
+      assert.equal(verifyArtifactVerdicts({ verdicts: { "software-architect-review": "approved" } }, cwd, 3), false,
+        "newest is _03_10 (rejected) — not _03_2, not another sprint's _02_9");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

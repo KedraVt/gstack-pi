@@ -660,7 +660,7 @@ Goal: {goal} | Branch: {branch}
 7. Output the DOC REPORT block`,
     // Sprint gates (plan B5): verdicts live BOTH on disk and in ## HANDOFF.
     "architect-gate": `## DELIVERABLE
-software-architect-artifact_N.md in the project root (N = next sequence number): binary verdict 'software-architect-review == approved' or 'software-architect-review == rejected', each rejection with file:line findings and concrete failure scenarios.
+software-architect-artifact_{sprint}_N.md in the project root (N = next sequence number): binary verdict 'software-architect-review == approved' or 'software-architect-review == rejected', each rejection with file:line findings and concrete failure scenarios.
 
 ## STOP CONDITION
 Stop when: the artifact exists with its parseable verdict line and every finding cites code.

@@ -1190,6 +1190,7 @@ describe("runSubagent real spawn path (crash regression)", () => {
       cwd: process.cwd(),
       timeoutMs: 1000,
     });
+    assert.equal(result.ok, false);
     assert.equal(result.configError, true);
   });
 });

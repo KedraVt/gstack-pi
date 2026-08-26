@@ -184,15 +184,23 @@ export async function handleSprintPanel(state: WorkflowState, ctx: ExtensionComm
       "SECURITY FREEZE",
       `A ${info?.severity ?? "critical/high"}-severity security rejection froze the sprint at "${info?.phaseId}".\n\n` +
         `Review ${info?.artifactPath ?? "devsecops/security-review-artifact.md"} with your security panel FIRST.\n` +
-        `Type exactly "${FREEZE_RESUME_PHRASE}" to unfreeze and re-run the review gate. Anything else keeps the freeze.`,
+        `Type exactly "${FREEZE_RESUME_PHRASE}" to unfreeze and re-run the review gate. Leave empty to keep the freeze; type ABORT to abandon the workflow.`,
     );
     if (answer !== undefined && answer.trim().toLowerCase() === FREEZE_RESUME_PHRASE) {
       const unfrozen = unfreeze(state);
       saveState(pi, unfrozen);
       ctx.ui.notify("Freeze lifted — re-running the devsecops review gate.", "info");
       launchPhase(pi, ctx, unfrozen);
+    } else if (answer !== undefined && answer.trim().toUpperCase() === "ABORT") {
+      // Review W3: an explicit escape hatch — the freeze must never soft-lock
+      // a user who lost the phrase or wants to abandon the sprint.
+      if (await ctx.ui.confirm("Abort frozen workflow?", `Abandon "sprint" despite the unresolved security finding?`)) {
+        saveState(pi, abortState(state));
+        try { ctx.ui.setStatus("gstack", undefined); } catch { /* stale */ }
+        ctx.ui.notify("Frozen workflow aborted.", "info");
+      }
     } else {
-      ctx.ui.notify(`Freeze kept${answer === undefined ? " (prompt dismissed)" : " — exact phrase not provided"}.`, "warning");
+      ctx.ui.notify(`Freeze kept${answer === undefined ? " (prompt dismissed)" : answer.trim() === "" ? "" : " — exact phrase not provided"}.`, "warning");
     }
     return true;
   }

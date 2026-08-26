@@ -5,7 +5,7 @@ import { saveState, advancePhase, gateForApproval, parkForUnreadableVerdict, typ
 import { buildPhaseInstructions, buildDeterministicPlan } from "./templates.ts";
 import { detectGitContext } from "./git.ts";
 import { runSubagent, type SpawnRequest, type SpawnResult, defaultTimeoutMs } from "./spawn.ts";
-import { parseHandoffVerdicts, verifyArtifactVerdicts } from "./verdicts.ts";
+import { parseHandoffVerdicts, verifyArtifactVerdicts, mergeParseOutcomes } from "./verdicts.ts";
 import { computeNextSprintNumber } from "./sprint.ts";
 import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens, delegationBudgetMs, modelTierFor, verdictsEnabled } from "./config.ts";
 import { ensureRun, recordDelegatedStep, writeRunReport, recordLiveness, recordTokens, totalTokensUsed } from "./telemetry.ts";
@@ -268,20 +268,22 @@ export async function executeCurrentPhase(
 
     // Sprint verdict parsing at DELEGATION time (plan B4 / D1): the raw
     // subagent outputs are the source of truth — never the main model's
-    // paraphrase. Dual-channel check against on-disk artifacts; any
-    // disagreement ⇒ parsed=null ⇒ D4 park (no attempt burned).
-    // GSTACK_PI_VERDICTS=off skips parsing entirely: gates then rely on the
-    // human reading the raw report (conservative kill-switch, BUG-6).
+    // paraphrase. Each CHAIN STEP parses independently (review W1: joining
+    // outputs first would drop every non-final HANDOFF once the total passed
+    // extractHandoff's whole-output threshold), then outcomes merge with
+    // contradiction ⇒ null. Dual-channel check against on-disk artifacts;
+    // any disagreement ⇒ parsed=null ⇒ D4 park (no attempt burned).
     if (state.workflowId === "sprint" && phase.loopBackTo && verdictsEnabled()) {
-      const mergedOutputs = results.map((r) => r.result.output ?? "").join("\n\n");
-      const outcome = parseHandoffVerdicts(mergedOutputs);
+      const outcome = mergeParseOutcomes(
+        results.map((r) => parseHandoffVerdicts(r.result.output ?? "")),
+      );
       let parsed = outcome.parsed;
       if (parsed && !verifyArtifactVerdicts(parsed, ctx.cwd, state.sprintNumber)) {
         parsed = null; // HANDOFF says X, artifact disagrees ⇒ fail closed
       }
       if (!parsed) {
         const parkedState = parkForUnreadableVerdict(
-          { ...state, pendingVerdict: { phaseId: phase.id, parsed: null, excerpt: outcome.lines.join("\n") || mergedOutputs.slice(0, 500) } },
+          { ...state, pendingVerdict: { phaseId: phase.id, parsed: null, excerpt: outcome.lines.join("\n") } },
           phase.id,
         );
         saveState(pi, parkedState);

@@ -182,8 +182,9 @@ export function advancePhase(state: WorkflowState, phaseId: string, result: Phas
       const runsDone = (next.attempts[phase.loopBackTo] ?? 0) + 1;
       next.attempts[phase.loopBackTo] = runsDone;
       if (runsDone >= ceiling) {
-        // Exhaustion ⇒ paused + user notified; phaseIndex stays past the
-        // review so a manual resume continues linearly (human accepted).
+        // Exhaustion ⇒ paused + user notified; phaseIndex stays AT the gate
+        // phase — forceContinuePastGate() performs the +1 when the human
+        // accepts, or the panel re-runs the gate for another verified attempt.
         next.status = "paused";
         next.pausedReason = `loop-exhausted:${phase.loopBackTo} after ${runsDone} runs`;
         return next;
