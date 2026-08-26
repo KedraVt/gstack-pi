@@ -61,6 +61,23 @@ export function strictContent(): boolean {
   return parse(process.env.GSTACK_PI_STRICT_CONTENT) ?? false;
 }
 
+// --- Sprint workflow kill-switches (MERGE-PLAN §12 / BUG-6) ------------------
+
+/** Register the sprint workflow at all. Off ⇒ hidden from menu/router entirely. */
+export function sprintEnabled(): boolean {
+  return parse(process.env.GSTACK_PI_SPRINT) ?? true;
+}
+
+/** Loop-back engine. Off ⇒ a negative gate verdict pauses instead of retrying. */
+export function loopbacksEnabled(): boolean {
+  return parse(process.env.GSTACK_PI_LOOPBACKS) ?? true;
+}
+
+/** Deterministic verdict parsing. Off ⇒ gates rely on human reading; no auto-routing. */
+export function verdictsEnabled(): boolean {
+  return parse(process.env.GSTACK_PI_VERDICTS) ?? true;
+}
+
 // --- Numeric configuration (STEP 5a / COR-06, COR-10) -------------------------
 
 const warnedOnce = new Set<string>();

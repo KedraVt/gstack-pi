@@ -138,8 +138,14 @@ describe("verdict parsing (D1/D4 fail-closed)", () => {
     assert.equal(parseHandoffVerdicts(base.replace("severity == critical", "")).parsed, null, "missing severity fails closed — human decides via D4 panel");
   });
 
-  test("unknown x == y lines are ignored as prose", () => {
-    const out = parseHandoffVerdicts("## HANDOFF\ncode-review == approved\ncoverage == high");
+  test("contradictory duplicate verdict lines ⇒ null, last-wins is never trusted (BUG-4)", () => {
+    const base = "## HANDOFF\ncode-review == approved";
+    assert.ok(parseHandoffVerdicts(`${base}\ncode-review == approved`).parsed, "identical repeat is redundant, not conflicting");
+    assert.equal(parseHandoffVerdicts(`${base}\ncode-review == rejected`).parsed, null);
+    assert.equal(parseHandoffVerdicts("## HANDOFF\nseverity == high\nseverity == low").parsed, null);
+  });
+
+  test("unknown x == y lines are ignored as prose", () => {    const out = parseHandoffVerdicts("## HANDOFF\ncode-review == approved\ncoverage == high");
     assert.ok(out.parsed);
     assert.deepEqual(Object.keys(out.parsed.verdicts), ["code-review"]);
   });
@@ -187,10 +193,17 @@ describe("dual-channel artifact verification (guard 3)", () => {
     }
   });
 
-  test("devsecops artifacts resolve under devsecops/", () => {
-    const cwd = setup({ "devsecops/security-review-artifact.md": "severity == high\nsecurity-review == rejected\n" });
+  test("devsecops artifacts resolve under devsecops/, sprint-stamped (BUG-2)", () => {
+    const cwd = setup({ "devsecops/security-review-artifact_01.md": "severity == high\nsecurity-review == rejected\n" });
     try {
-      assert.equal(verifyArtifactVerdicts({ verdicts: { "security-review": "rejected" } }, cwd, 1), true);
+      assert.equal(verifyArtifactVerdicts({ verdicts: { "security-review": "rejected" } }, cwd, 1), true, "stamped artifact confirms");
+      // BUG-2 regression: an UNSTAMPED leftover from a prior sprint must NOT satisfy this sprint's disk channel
+      const stale = setup({ "devsecops/security-review-artifact.md": "severity == high\nsecurity-review == rejected\n" });
+      try {
+        assert.equal(verifyArtifactVerdicts({ verdicts: { "security-review": "rejected" } }, stale, 1), false, "unstamped stale artifact fails");
+      } finally {
+        rmSync(stale, { recursive: true, force: true });
+      }
       assert.equal(verifyArtifactVerdicts({ verdicts: { "code-review": "approved" } }, cwd, 1), false, "missing artifact fails");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -218,6 +231,21 @@ describe("dual-channel artifact verification (guard 3)", () => {
       assert.equal(verifyArtifactVerdicts({ verdicts: { status: "green" } }, cwd, 2), false, "line outside the tail window does not count");
       writeFileSync(path.join(cwd, "qa-artifact_03.md"), `${padding}\nstatus == orange`);
       assert.equal(verifyArtifactVerdicts({ verdicts: { status: "orange" } }, cwd, 3), true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("template prose cannot confirm a verdict — line-anchored needle (BUG-3)", () => {
+    const cwd = setup({
+      // Unresolved instruction text left in the artifact by a lazy reviewer:
+      "devsecops/code-review-artifact_04.md": "Write devsecops/code-review-artifact.md containing the line 'code-review == approved|rejected'.",
+    });
+    try {
+      assert.equal(verifyArtifactVerdicts({ verdicts: { "code-review": "approved" } }, cwd, 4), false, "'approved|rejected' template line is not an approval");
+      // A real verdict line on its own line DOES confirm:
+      writeFileSync(path.join(cwd, "devsecops/code-review-artifact_04.md"), "findings: none\ncode-review == approved\n");
+      assert.equal(verifyArtifactVerdicts({ verdicts: { "code-review": "approved" } }, cwd, 4), true);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -315,7 +343,16 @@ describe("deterministic routing table (routeVerdict)", () => {
     assert.deepEqual(routeVerdict("architect-gate", { verdicts: { "software-architect-review": "approved" } }), { kind: "advance" });
     assert.deepEqual(routeVerdict("qa-verdict", { verdicts: { status: "green" } }), { kind: "advance" });
     assert.deepEqual(routeVerdict("devsecops-review", { verdicts: { "code-review": "approved", "security-review": "approved" } }), { kind: "advance" });
-    assert.deepEqual(routeVerdict("devsecops-review", { verdicts: { "docker-security": "approved" } }), { kind: "advance" });
+    assert.deepEqual(routeVerdict("devsecops-review", { verdicts: { "docker-security": "approved" } }), { kind: "park" }, "BUG-1: gate missing its main verdicts parks, never default-advances");
+  });
+
+  test("whitelisted-but-off-map values park instead of advancing (BUG-1)", () => {
+    // `status == failed` at the QA gate used to default-advance (fail-open);
+    // now it routes as the unambiguous negative it is.
+    assert.deepEqual(routeVerdict("qa-verdict", { verdicts: { status: "failed" } }), { kind: "loop-back" });
+    // `software-architect-review == success` is neither expected-positive nor a
+    // routing negative ⇒ ambiguous intent ⇒ human decides via panel.
+    assert.deepEqual(routeVerdict("architect-gate", { verdicts: { "software-architect-review": "success" } }), { kind: "park" });
   });
 
   test("non-security rejections loop back (D2)", () => {
@@ -382,6 +419,7 @@ describe("loop engine in advancePhase (B3)", () => {
 
   test("security critical/high freeze parks WITHOUT advancing or burning attempts (D3)", () => {
     const state = sprintState(7, {
+      sprintNumber: 7,
       attempts: { implement: 1 },
       pendingVerdict: { phaseId: "devsecops-review", parsed: { verdicts: { "security-review": "rejected" }, severity: "critical" }, excerpt: "" },
     });
@@ -390,7 +428,7 @@ describe("loop engine in advancePhase (B3)", () => {
     assert.equal(next.status, "paused");
     assert.equal(next.phaseIndex, 7, "held at the review phase");
     assert.equal(next.attempts.implement, 1, "no attempt burned");
-    assert.match(next.freezeInfo.artifactPath, /security-review-artifact\.md$/);
+    assert.match(next.freezeInfo.artifactPath, /security-review-artifact_07\.md$/);
     assert.equal(next.results["devsecops-review"].summary, "severe finding", "gate result still recorded");
 
     const resumed = unfreeze(next);

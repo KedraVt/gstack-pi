@@ -46,6 +46,25 @@ export const KNOWN_VARIABLES = [
 
 const VAR_LINE_RE = /^\s*([A-Za-z][A-Za-z0-9 _-]*?)\s*==\s*(\S[^\n]*)$/;
 
+/** Values that mean "the gated work did not pass" — routing negatives. */
+export const NEGATIVE_VALUES = new Set(["rejected", "failed", "red", "orange"]);
+
+/**
+ * Per-phase expectation maps (BUG-1 fix): every known verdict variable must
+ * land on an explicitly expected POSITIVE value or a routing NEGATIVE.
+ * Whitelisted-but-off-map values (e.g. `status == success` at the QA gate)
+ * park for human decision instead of silently advancing.
+ */
+export const PHASE_EXPECTATIONS: Record<string, Record<string, readonly string[]>> = {
+  "architect-gate": { "software-architect-review": ["approved"] },
+  "qa-verdict": { status: ["green"] },
+  "devsecops-review": {
+    "code-review": ["approved"],
+    "security-review": ["approved", "rejected"],
+    "docker-build": ["success", "failed"],
+  },
+};
+
 export interface VerdictParseOutcome {
   parsed: ParsedVerdict | null;
   /** Raw verdict-shaped lines found in the HANDOFF, for the D4 panel display. */
@@ -87,12 +106,21 @@ export function parseHandoffVerdicts(output: string): VerdictParseOutcome {
       if (!(SEVERITY_WHITELIST as readonly string[]).includes(value)) {
         return { parsed: null, lines }; // hedged/malformed severity ⇒ D4 panel (D3)
       }
+      // BUG-4: a second, DIFFERENT severity line is self-contradiction ⇒ null.
+      if (severity !== undefined && severity !== value) {
+        return { parsed: null, lines };
+      }
       severity = value as VerdictSeverity;
       continue;
     }
 
     if (!(VALUE_WHITELIST as readonly string[]).includes(value)) {
       return { parsed: null, lines }; // fail-closed on any malformed known verdict
+    }
+    // BUG-4: contradictory duplicate of a variable we already captured ⇒ null
+    // (identical repeats are redundant, not conflicting — keep first).
+    if (verdicts[variable] !== undefined && verdicts[variable] !== value) {
+      return { parsed: null, lines };
     }
     verdicts[variable] = value;
   }
@@ -134,28 +162,33 @@ function readTail(filePath: string): string | null {
 
 /**
  * Resolve the on-disk artifacts expected to carry each verdict variable,
- * relative to cwd. QA status rides the sprint-numbered artifact; architect
- * review rides the NEWEST software-architect-artifact_n.md (globbed).
+ * relative to cwd. Gate artifacts are SPRINT-STAMPED (BUG-2 fix): a stale
+ * report from a prior sprint can no longer satisfy this sprint's disk channel.
+ * QA status rides the sprint-numbered artifact; architect review rides the
+ * NEWEST sprint-stamped software-architect-artifact.
  */
 export function artifactForVariable(variable: string, cwd: string, sprintNumber?: number): string[] {
   switch (variable) {
     case "status":
       return sprintNumber !== undefined ? [path.join(cwd, `qa-artifact_${pad2(sprintNumber)}.md`)] : [];
     case "code-review":
-      return [path.join(cwd, "devsecops", "code-review-artifact.md")];
+      return [path.join(cwd, "devsecops", `code-review-artifact${sprintStamp(sprintNumber)}.md`)];
     case "security-review":
-      return [path.join(cwd, "devsecops", "security-review-artifact.md")];
+      return [path.join(cwd, "devsecops", `security-review-artifact${sprintStamp(sprintNumber)}.md`)];
     case "docker-build":
     case "docker-security":
-      return [path.join(cwd, "devsecops", "docker-build-report.md")];
+      return [path.join(cwd, "devsecops", `docker-build-report${sprintStamp(sprintNumber)}.md`)];
     case "software-architect-review": {
-      const dir = path.join(cwd);
       try {
         const files = fs
-          .readdirSync(dir)
-          .filter((f) => /^software-architect-artifact_\d+\.md$/.test(f))
+          .readdirSync(cwd)
+          .filter((f) =>
+            sprintNumber !== undefined
+              ? new RegExp(`^software-architect-artifact_${pad2(sprintNumber)}_\\d+\\.md$`).test(f)
+              : /^software-architect-artifact_\d+\.md$/.test(f),
+          )
           .sort();
-        return files.length > 0 ? [path.join(dir, files[files.length - 1])] : [];
+        return files.length > 0 ? [path.join(cwd, files[files.length - 1])] : [];
       } catch {
         return [];
       }
@@ -165,18 +198,25 @@ export function artifactForVariable(variable: string, cwd: string, sprintNumber?
   }
 }
 
+function sprintStamp(sprintNumber?: number): string {
+  return sprintNumber !== undefined ? `_${pad2(sprintNumber)}` : "";
+}
+
 /**
  * Verify EVERY parsed verdict against its on-disk artifact (guard 3): the
- * artifact must exist AND contain the same `variable == value` line within
- * its ≤64KB tail. Any disagreement/absence ⇒ false (fail-closed).
+ * artifact must exist AND contain the same `variable == value` verdict on its
+ * OWN line within the ≤64KB tail (BUG-3 fix: line-anchored match — template
+ * prose like `code-review == approved|rejected` can no longer confirm a
+ * verdict). Any disagreement/absence ⇒ false (fail-closed).
  */
 export function verifyArtifactVerdicts(parsed: ParsedVerdict, cwd: string, sprintNumber?: number): boolean {
   for (const [variable, value] of Object.entries(parsed.verdicts)) {
-    const needle = `${variable} == ${value}`;
+    const escaped = `${variable}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const needle = new RegExp(`^\\s*(?:#+\\s*)?${escaped}\\s*==\\s*${value}\\s*$`, "im");
     const candidates = artifactForVariable(variable, cwd, sprintNumber);
     const confirmed = candidates.some((artifactPath) => {
       const tail = readTail(artifactPath)?.toLowerCase();
-      return tail?.includes(needle) ?? false;
+      return tail ? needle.test(tail) : false;
     });
     if (!confirmed) return false;
   }

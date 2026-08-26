@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { WorkflowState, PhaseResult, WorkflowPhase, ParsedVerdict } from "./types.ts";
-import { sprintMaxAttempts, sprintArchMaxAttempts } from "./config.ts";
-import { buildRetryFeedback } from "./verdicts.ts";
+import { sprintMaxAttempts, sprintArchMaxAttempts, loopbacksEnabled } from "./config.ts";
+import { buildRetryFeedback, PHASE_EXPECTATIONS, NEGATIVE_VALUES } from "./verdicts.ts";
+import { pad2 } from "./sprint.ts";
 
 const ENTRY_TYPE = "gstack-wf-state";
 
@@ -59,32 +60,57 @@ function ceilingFor(targetPhaseId: string, declared?: number): number {
 }
 
 interface RouteAction {
-  kind: "advance" | "loop-back" | "freeze";
+  kind: "advance" | "loop-back" | "freeze" | "park";
 }
 
 /**
- * Deterministic routing table (D1–D3). Approved/green ⇒ linear advance.
- * Security critical|high rejection ⇒ freeze. Everything else rejected ⇒
- * loop back. Never matched on prose beyond the parsed whitelist values.
+ * Deterministic routing table (D1–D3, BUG-1 fix). FAIL-CLOSED by expectation
+ * map: each known verdict variable must land on an explicitly expected positive
+ * value or a routing negative. Whitelisted-but-off-map values (e.g.
+ * `status == success` at the QA gate) PARK for human decision instead of
+ * silently advancing. Missing expected variables also park.
  */
 export function routeVerdict(phaseId: string, parsed: ParsedVerdict): RouteAction {
   const v = parsed.verdicts;
+  const expectations = PHASE_EXPECTATIONS[phaseId];
+  if (!expectations) return { kind: "advance" }; // non-gated phase (defensive)
+
+  let sawNegative = false;
+  for (const [variable, allowed] of Object.entries(expectations)) {
+    const value = v[variable];
+    if (value === undefined) continue; // optional variable for this phase
+    if (NEGATIVE_VALUES.has(value)) {
+      sawNegative = true;
+      continue;
+    }
+    if (!allowed.includes(value)) {
+      // Whitelisted globally but off-map here (e.g. `status == failed` at QA):
+      // ambiguous intent ⇒ human decision, never default-advance.
+      return { kind: "park" };
+    }
+  }
+
   if (phaseId === "devsecops-review") {
     const securityRejected = v["security-review"] === "rejected";
-    const severe = securityRejected && (parsed.severity === "critical" || parsed.severity === "high");
-    if (severe) return { kind: "freeze" };
-    const anyRejected =
-      v["code-review"] === "rejected" ||
-      securityRejected ||
-      v["docker-build"] === "failed" ||
-      v["docker-security"] === "rejected";
-    if (anyRejected) return { kind: "loop-back" };
-    return { kind: "advance" };
+    // Parser guarantees severity exists on security rejections (D3).
+    if (securityRejected && (parsed.severity === "critical" || parsed.severity === "high")) {
+      return { kind: "freeze" };
+    }
+    if (securityRejected) return { kind: "loop-back" };
+    // Docker verdicts are only meaningful when the reviewer emitted them.
+    if (v["docker-build"] === "failed" || v["docker-security"] === "rejected") {
+      return { kind: "loop-back" };
+    }
   }
-  // architect-gate + qa-verdict: single decisive variable.
-  const values = Object.values(v);
-  if (values.includes("rejected") || values.includes("red") || values.includes("orange")) {
-    return { kind: "loop-back" };
+
+  if (sawNegative) return { kind: "loop-back" };
+
+  // Advance ONLY when every REQUIRED variable for this phase is present and
+  // positive. A gate that skipped its main verdict (e.g. devsecops chain
+  // emitting docker-build but no code-review) parks instead of advancing.
+  for (const [variable, allowed] of Object.entries(expectations)) {
+    if (phaseId === "devsecops-review" && variable.startsWith("docker-")) continue; // conditional
+    if (!allowed.includes(v[variable] ?? "")) return { kind: "park" };
   }
   return { kind: "advance" };
 }
@@ -118,6 +144,13 @@ export function advancePhase(state: WorkflowState, phaseId: string, result: Phas
   const parsed = state.pendingVerdict?.parsed ?? null;
   if (phase?.loopBackTo && parsed) {
     const action = routeVerdict(phase.id, parsed);
+
+    if (action.kind === "park") {
+      // BUG-1 fail-closed: whitelisted-but-unroutable verdict ⇒ D4 panel,
+      // WITHOUT recording completion or burning an attempt.
+      return parkForUnreadableVerdict({ ...state, pendingVerdict: state.pendingVerdict }, phase.id);
+    }
+
     const targetIndex = opts!.phases!.findIndex((p) => p.id === phase.loopBackTo);
     const cwd = opts?.cwd ?? process.cwd();
     const sprintNumber = next.sprintNumber;
@@ -131,9 +164,17 @@ export function advancePhase(state: WorkflowState, phaseId: string, result: Phas
       next.freezeInfo = {
         phaseId: phase.id,
         severity: parsed.severity!,
-        artifactPath: `devsecops/security-review-artifact.md`,
+        artifactPath: `devsecops/security-review-artifact_${pad2(next.sprintNumber ?? 0)}.md`,
       };
       return next; // phaseIndex held at the review phase
+    }
+
+    if (action.kind === "loop-back" && targetIndex >= 0 && !loopbacksEnabled()) {
+      // GSTACK_PI_LOOPBACKS=off: negative verdicts pause instead of retrying
+      // (pre-loop behavior; the human decides what happens next).
+      next.status = "paused";
+      next.pausedReason = `loopback-disabled:${phase.id}`;
+      return next;
     }
 
     if (action.kind === "loop-back" && targetIndex >= 0) {

@@ -1,6 +1,6 @@
 import type { Workflow } from "./types.ts";
 import { allTestsPassed } from "./skip.ts";
-import { sprintMaxAttempts, sprintArchMaxAttempts } from "./config.ts";
+import { sprintMaxAttempts, sprintArchMaxAttempts, sprintEnabled } from "./config.ts";
 
 const develop: Workflow = {
   id: "develop",
@@ -446,7 +446,7 @@ Emit ## HANDOFF with branch names, files touched, test evidence.`,
           agent: "reviewer",
           skills: ["gstack-review"],
           task: `## DELIVERABLE
-Adversarial code audit of the sprint diff: findings with severity + file:line + concrete failure scenario, ending with the parseable line 'code-review == approved' or 'code-review == rejected' (also written into devsecops/code-review-artifact.md).
+Adversarial code audit of the sprint diff: findings with severity + file:line + concrete failure scenario, ending with the parseable line 'code-review == approved' or 'code-review == rejected' (also written into devsecops/code-review-artifact_{sprint}.md).
 
 ## STOP CONDITION
 Stop when: the full diff has been audited and the artifact written.
@@ -457,7 +457,7 @@ Audit the changes produced by the implement chain. Glossary violations are block
 
 {glossary}
 
-Write devsecops/code-review-artifact.md containing the line 'code-review == approved|rejected'. Repeat the exact line in your ## HANDOFF — the orchestrator cross-checks both channels before routing.`,
+Write devsecops/code-review-artifact_{sprint}.md containing the line 'code-review == approved|rejected'. Repeat the exact line in your ## HANDOFF — the orchestrator cross-checks both channels before routing.`,
         },
         {
           agent: "devsecops-reviewer",
@@ -466,13 +466,13 @@ Write devsecops/code-review-artifact.md containing the line 'code-review == appr
 Security (+ conditional Docker/CI) audit of the sprint diff: STRIDE-lite pass over new boundaries, actionable remediations, artifacts under devsecops/ ending with parseable verdict lines ('security-review == approved|rejected', 'severity == critical|high|medium|low' when rejecting).
 
 ## STOP CONDITION
-Stop when: security-review-artifact.md exists with its verdict lines and every finding carries a copy-paste-ready fix.
+Stop when: security-review-artifact_{sprint}.md exists with its verdict lines and every finding carries a copy-paste-ready fix.
 
 ## CONTEXT
 Sprint {sprint} | Goal: {goal} | Branch: {branch}
 The code auditor ran before you ({previous}). Severity discipline: escalate-on-doubt — critical/high freeze the pipeline for human review; medium/low loop back automatically.
 
-Write devsecops/security-review-artifact.md (+ docker-build-report.md ONLY if the repo ships Dockerfiles/compose). Repeat the exact verdict lines in your ## HANDOFF — the orchestrator cross-checks both channels.`,
+Write devsecops/security-review-artifact_{sprint}.md (+ docker-build-report_{sprint}.md ONLY if the repo ships Dockerfiles/compose). Repeat the exact verdict lines in your ## HANDOFF — the orchestrator cross-checks both channels.`,
         },
       ],
       optional: false,
@@ -504,7 +504,18 @@ Write devsecops/security-review-artifact.md (+ docker-build-report.md ONLY if th
   ],
 };
 
-const ALL_WORKFLOWS: Workflow[] = [develop, investigate, qa, qaReport, ship, review, quick, sprint];
+// GSTACK_PI_SPRINT=off hides the sprint workflow from menu and router entirely
+// (kill-switch; every other workflow is unaffected).
+const ALL_WORKFLOWS: Workflow[] = [
+  ...(sprintEnabled() ? [sprint] : []),
+  develop,
+  investigate,
+  qa,
+  qaReport,
+  ship,
+  review,
+  quick,
+];
 
 export function getAllWorkflows(): Workflow[] {
   return ALL_WORKFLOWS;

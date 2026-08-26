@@ -319,7 +319,7 @@ Deferred ideas live in `TODOS.md` (absorbed the old `FUTURE_UPDATES.md`).
 | "gstack browse binary not found" | Run `update.sh` or set `GSTACK_BINARY` |
 | "server-node.mjs not found" (Windows) | Run `bash browse/scripts/build-node-server.sh` in the gstack repo |
 | `/gstack` not showing in pi | Ensure the extension is in `~/.pi/agent/extensions/gstack-pi/` with `index.ts` at root |
-| Subagent phases fail | Ensure `~/.pi/agent/agents/` has scout.md, planner.md, worker.md, reviewer.md — canonical copies live in this repo's [`agents/`](agents/) and are synced by `update.sh` (existing files backed up, never deleted). If you hand-tuned them, re-apply your changes after a sync or restore from the `.bak-<timestamp>` copy |
+| Subagent phases fail | Ensure `~/.pi/agent/agents/` has scout.md, planner.md, worker.md, reviewer.md — plus the sprint specialists (sprint-planner, software-architect, backend-developer, frontend-developer, qa-engineer, devsecops-reviewer) for the sprint workflow. Canonical copies live in this repo's [`agents/`](agents/) and are synced by `update.sh` (existing files backed up, never deleted). If you hand-tuned them, re-apply your changes after a sync or restore from the `.bak-<timestamp>` copy |
 | Skills not loading | Pi requires `"skills": ["./skills"]` in a package.json, or project `.pi/settings.json` |
 
 ## License
@@ -378,6 +378,12 @@ the root-cause scout->planner chain collapses to ONE validate-only planner step.
 | `GSTACK_PI_MANUAL_GATES` | on | approval pause after decision phases |
 | `GSTACK_PI_OPTIONAL_PHASES` | ask | `ask` \| `auto` \| `skip` handling of optional phases |
 | `GSTACK_PI_AUTO_GATE_VALIDATED` | off | auto-advance past root-cause gate when validation starts with `VALIDATED:` |
+| `GSTACK_PI_SPRINT` | on | registers the sprint workflow; `off` hides it from menu and router entirely |
+| `GSTACK_PI_LOOPBACKS` | on | sprint loop-back engine; `off` ⇒ negative gate verdicts pause instead of retrying |
+| `GSTACK_PI_VERDICTS` | on | deterministic verdict parsing; `off` ⇒ gates rely on human reading, no auto-routing |
+| `GSTACK_PI_SPRINT_MAX_ATTEMPTS` | 4 | shared implement-rerun ceiling across devsecops + QA gates |
+| `GSTACK_PI_ARCH_MAX_ATTEMPTS` | 5 | system-design rerun ceiling after architect rejections |
+| `GSTACK_PI_MODEL_FAST` / `_STRONG` | unset | model tiers for mechanical vs judgment-heavy phases; unset keeps each agent's own default (inert) |
 | `GSTACK_PI_STRICT_CONTENT` | off | heuristic scan + ASCII-sentinel enveloping of page-content tool output (WP2 defense-in-depth) |
 | `GSTACK_PI_SUBAGENT_TIMEOUT` | 1200 | fallback timeout, seconds |
 | `GSTACK_PI_TIMEOUT_EXPLORE` / `_WORK` / `_VERIFY` | 900 / 1500 / 900 | per-class timeouts, seconds |

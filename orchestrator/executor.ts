@@ -7,7 +7,7 @@ import { detectGitContext } from "./git.ts";
 import { runSubagent, type SpawnRequest, type SpawnResult, defaultTimeoutMs } from "./spawn.ts";
 import { parseHandoffVerdicts, verifyArtifactVerdicts } from "./verdicts.ts";
 import { computeNextSprintNumber } from "./sprint.ts";
-import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens, delegationBudgetMs, modelTierFor } from "./config.ts";
+import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens, delegationBudgetMs, modelTierFor, verdictsEnabled } from "./config.ts";
 import { ensureRun, recordDelegatedStep, writeRunReport, recordLiveness, recordTokens, totalTokensUsed } from "./telemetry.ts";
 import { extractHandoff } from "./handoff.ts";
 import { isRefutedStrategy } from "./skip.ts";
@@ -270,7 +270,9 @@ export async function executeCurrentPhase(
     // subagent outputs are the source of truth — never the main model's
     // paraphrase. Dual-channel check against on-disk artifacts; any
     // disagreement ⇒ parsed=null ⇒ D4 park (no attempt burned).
-    if (state.workflowId === "sprint" && phase.loopBackTo) {
+    // GSTACK_PI_VERDICTS=off skips parsing entirely: gates then rely on the
+    // human reading the raw report (conservative kill-switch, BUG-6).
+    if (state.workflowId === "sprint" && phase.loopBackTo && verdictsEnabled()) {
       const mergedOutputs = results.map((r) => r.result.output ?? "").join("\n\n");
       const outcome = parseHandoffVerdicts(mergedOutputs);
       let parsed = outcome.parsed;
