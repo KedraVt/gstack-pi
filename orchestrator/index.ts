@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { handleGstackCommand, getCompletions } from "./command.ts";
 import { createInputRouter } from "./router.ts";
 import { loadActiveState, saveState, advancePhase, gateForApproval, createState } from "./state.ts";
+import type { AdvanceOptions } from "./state.ts";
 import { getWorkflow, getWorkflowIds } from "./workflows.ts";
 import { launchPhase, invalidateRuntime } from "./executor.ts";
 import { manualGates, autoGateValidated } from "./config.ts";
@@ -72,13 +73,40 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       }
 
       const phase = workflow.phases[state.phaseIndex];
+
+      // Sprint loop engine (D1–D3): verdict routing needs the phase list and
+      // cwd; the pendingVerdict was stashed at delegation time.
+      const advanceOpts: AdvanceOptions = { phases: workflow.phases, cwd: ctx.cwd };
       const newState = advancePhase(
         state,
         phase.id,
         { status: params.status, summary: params.summary },
         workflow.phases.length,
+        advanceOpts,
       );
       saveState(pi, newState);
+
+      // D3 security freeze surfaced to both model and user.
+      if (newState.frozenUntilHuman) {
+        const info = newState.freezeInfo;
+        return {
+          content: [{
+            type: "text" as const,
+            text: `SECURITY FREEZE: ${info?.severity ?? "critical/high"} severity security rejection in "${phase.id}". The pipeline is FROZEN — no further automated work. A human security panel must review devsecops/security-review-artifact.md; only /gstack next can unfreeze after that review. Do NOT attempt fixes or call gstack_advance again.`,
+          }],
+          isError: false,
+        };
+      }
+
+      if (newState.pausedReason?.startsWith("loop-exhausted:")) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Retry budget exhausted (${newState.pausedReason}). Workflow paused for human decision — review the latest artifacts with the user; /gstack next continues past this gate manually.`,
+          }],
+        };
+      }
+
 
       if (newState.status === "completed") {
         ctx.ui.setStatus("gstack", undefined);

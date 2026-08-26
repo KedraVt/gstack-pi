@@ -1,5 +1,6 @@
 import type { Workflow } from "./types.ts";
 import { allTestsPassed } from "./skip.ts";
+import { sprintMaxAttempts, sprintArchMaxAttempts } from "./config.ts";
 
 const develop: Workflow = {
   id: "develop",
@@ -327,7 +328,183 @@ const qaReport: Workflow = {
   ],
 };
 
-const ALL_WORKFLOWS: Workflow[] = [develop, investigate, qa, qaReport, ship, review, quick];
+/**
+ * Sprint workflow (plan B5): `.agents-clean` agile methodology fused with
+ * gstack-pi's deterministic execution. Planning phases stay split (D6);
+ * implement is a strict BE→FE chain (D5); review gates carry the loop
+ * engine config consumed by state.advancePhase + executor verdict parsing.
+ */
+const sprint: Workflow = {
+  id: "sprint",
+  name: "Sprint (Agile Pipeline)",
+  description: "Agile sprint: user story, capability, system design, architect gate, backlog, BE→FE implementation, devsecops + QA gates, archive",
+  intents: [
+    { pattern: /\b(sprint|scrum)\b/i, weight: 0.9 },
+    { pattern: /\b(user stor(y|ies)|product backlog|sprint backlog)\b/i, weight: 0.85 },
+    { pattern: /\b(agile pipeline|domain-driven design sprint)\b/i, weight: 0.8 },
+  ],
+  phases: [
+    {
+      id: "understand",
+      name: "Understand Requirements",
+      execution: "main",
+      optional: false,
+      advance: "manual",
+    },
+    {
+      id: "user-story",
+      name: "User Story",
+      execution: "main",
+      optional: false,
+      skills: ["gstack-sprint-capability"],
+    },
+    {
+      id: "capability",
+      name: "Product Capability",
+      execution: "main",
+      optional: false,
+      skills: ["gstack-sprint-capability"],
+    },
+    {
+      id: "system-design",
+      name: "System Design",
+      execution: "main",
+      optional: false,
+      advance: "manual",
+      skills: ["gstack-sprint-system-design", "gstack-sprint-adr"],
+    },
+    {
+      id: "architect-gate",
+      name: "Architect Review Gate",
+      execution: "subagent",
+      agent: "software-architect",
+      optional: false,
+      // Decision phase: the user sees the binary verdict before the backlog.
+      advance: "manual",
+      skills: ["gstack-sprint-system-design"],
+      // REJECTED ⇒ loop back to system-design with the architect's handoff.
+      loopBackTo: "system-design",
+      maxAttempts: sprintArchMaxAttempts(),
+      feedbackFrom: "architect-gate",
+    },
+    {
+      id: "backlog",
+      name: "Sprint Backlog",
+      execution: "main",
+      optional: false,
+      advance: "manual",
+      skills: ["gstack-sprint-tasks"],
+    },
+    {
+      id: "implement",
+      name: "Implement (BE → FE)",
+      execution: "subagent",
+      chain: [
+        {
+          agent: "backend-developer",
+          skills: ["gstack-sprint-tdd", "gstack-sprint-verification"],
+          task: `## DELIVERABLE
+Backend implementation of your assigned tasks from tasks_{sprint}.md on a dedicated task/<slug> branch: code + failing-test-first tests green + observability hooks.
+
+## STOP CONDITION
+Stop when: every assigned backend task's success condition is demonstrably met and the suite passes.
+
+## CONTEXT
+Sprint {sprint} | Goal: {goal} | Branch: {branch}
+Read tasks_{sprint}.md FIRST and claim the backend-role tasks in order. Respect the Ubiquitous Language glossary below — synonym introduction is a review-blocking defect.
+
+{glossary}
+
+Sequential discipline: this phase runs strictly BEFORE the frontend developer; do not touch frontend-owned modules except defined interfaces. Emit ## HANDOFF with branch names, files touched, test evidence.`,
+        },
+        {
+          agent: "frontend-developer",
+          skills: ["gstack-sprint-tdd", "gstack-sprint-verification"],
+          task: `## DELIVERABLE
+Frontend implementation consuming the backend interfaces from tasks_{sprint}.md: code + tests green + UI wired to the agreed contracts.
+
+## STOP CONDITION
+Stop when: every assigned frontend task's success condition is demonstrably met and the suite passes.
+
+## CONTEXT
+Sprint {sprint} | Goal: {goal} | Branch: {branch}
+The backend specialist's handoff is below — consume its contracts, do not re-implement them. Respect the Ubiquitous Language glossary; synonyms are review-blocking defects.
+
+{glossary}
+
+Emit ## HANDOFF with branch names, files touched, test evidence.`,
+        },
+      ],
+      optional: false,
+    },
+    {
+      id: "devsecops-review",
+      name: "DevSecOps Review",
+      execution: "subagent",
+      chain: [
+        {
+          agent: "reviewer",
+          skills: ["gstack-review"],
+          task: `## DELIVERABLE
+Adversarial code audit of the sprint diff: findings with severity + file:line + concrete failure scenario, ending with the parseable line 'code-review == approved' or 'code-review == rejected' (also written into devsecops/code-review-artifact.md).
+
+## STOP CONDITION
+Stop when: the full diff has been audited and the artifact written.
+
+## CONTEXT
+Sprint {sprint} | Goal: {goal} | Branch: {branch}
+Audit the changes produced by the implement chain. Glossary violations are blocking defects.
+
+{glossary}
+
+Write devsecops/code-review-artifact.md containing the line 'code-review == approved|rejected'. Repeat the exact line in your ## HANDOFF — the orchestrator cross-checks both channels before routing.`,
+        },
+        {
+          agent: "devsecops-reviewer",
+          skills: ["gstack-sprint-appsec", "gstack-sprint-docker", "gstack-sprint-pipeline"],
+          task: `## DELIVERABLE
+Security (+ conditional Docker/CI) audit of the sprint diff: STRIDE-lite pass over new boundaries, actionable remediations, artifacts under devsecops/ ending with parseable verdict lines ('security-review == approved|rejected', 'severity == critical|high|medium|low' when rejecting).
+
+## STOP CONDITION
+Stop when: security-review-artifact.md exists with its verdict lines and every finding carries a copy-paste-ready fix.
+
+## CONTEXT
+Sprint {sprint} | Goal: {goal} | Branch: {branch}
+The code auditor ran before you ({previous}). Severity discipline: escalate-on-doubt — critical/high freeze the pipeline for human review; medium/low loop back automatically.
+
+Write devsecops/security-review-artifact.md (+ docker-build-report.md ONLY if the repo ships Dockerfiles/compose). Repeat the exact verdict lines in your ## HANDOFF — the orchestrator cross-checks both channels.`,
+        },
+      ],
+      optional: false,
+      loopBackTo: "implement",
+      maxAttempts: sprintMaxAttempts(),
+      feedbackFrom: "devsecops-review",
+    },
+    {
+      id: "qa-verdict",
+      name: "QA Verdict",
+      execution: "subagent",
+      agent: "qa-engineer",
+      optional: false,
+      skills: ["gstack-sprint-qa"],
+      loopBackTo: "implement",
+      maxAttempts: sprintMaxAttempts(),
+      feedbackFrom: "qa-verdict",
+    },
+    {
+      id: "commit-archive",
+      name: "Commit & Archive Sprint",
+      execution: "subagent",
+      agent: "worker",
+      optional: false,
+      // Hard human gate: nothing lands without the user (D3 residual-risk control).
+      advance: "manual",
+      skills: ["gstack-ship", "gstack-sprint-verification"],
+    },
+  ],
+};
+
+const ALL_WORKFLOWS: Workflow[] = [develop, investigate, qa, qaReport, ship, review, quick, sprint];
 
 export function getAllWorkflows(): Workflow[] {
   return ALL_WORKFLOWS;

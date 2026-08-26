@@ -1,11 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { WorkflowState, WorkflowContext, GitContext } from "./types.ts";
 import { getWorkflow } from "./workflows.ts";
-import { saveState, advancePhase, gateForApproval } from "./state.ts";
+import { saveState, advancePhase, gateForApproval, parkForUnreadableVerdict, type AdvanceOptions } from "./state.ts";
 import { buildPhaseInstructions, buildDeterministicPlan } from "./templates.ts";
 import { detectGitContext } from "./git.ts";
 import { runSubagent, type SpawnRequest, type SpawnResult, defaultTimeoutMs } from "./spawn.ts";
-import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens, delegationBudgetMs } from "./config.ts";
+import { parseHandoffVerdicts, verifyArtifactVerdicts } from "./verdicts.ts";
+import { computeNextSprintNumber } from "./sprint.ts";
+import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens, delegationBudgetMs, modelTierFor } from "./config.ts";
 import { ensureRun, recordDelegatedStep, writeRunReport, recordLiveness, recordTokens, totalTokensUsed } from "./telemetry.ts";
 import { extractHandoff } from "./handoff.ts";
 import { isRefutedStrategy } from "./skip.ts";
@@ -190,6 +192,23 @@ export async function executeCurrentPhase(
   if (!alive()) return;
   const wfCtx: WorkflowContext = { state, git, cwd: ctx.cwd };
 
+  // Sprint numbering hook (plan E5): computed ONCE at P02 entry.
+  // Anomaly ⇒ pause + human decision panel; never guess a number.
+  if (state.workflowId === "sprint" && phase.id === "user-story" && state.sprintNumber === undefined) {
+    const discovery = computeNextSprintNumber(ctx.cwd);
+    if (discovery.anomaly) {
+      const parked = { ...state, status: "paused" as const, pausedReason: `anomaly:${discovery.anomaly}` };
+      saveState(pi, parked);
+      notify(`gstack sprint: sprint numbering anomaly — ${discovery.anomaly}. Resolve manually, then resume via /gstack next.`, "warning");
+      return;
+    }
+    const numbered = { ...state, sprintNumber: discovery.next };
+    saveState(pi, numbered);
+    state = numbered;
+    wfCtx.state = numbered;
+    notify(`gstack sprint: assigned sprint number ${String(discovery.next).padStart(2, "0")}.`, "info");
+  }
+
   if (phase.skipWhen?.(wfCtx)) {
     const skipped = advancePhase(state, phase.id, { status: "skipped", summary: "Auto-skipped by condition" }, workflow.phases.length);
     saveState(pi, skipped);
@@ -246,6 +265,35 @@ export async function executeCurrentPhase(
   if (deterministicSubagents() && phase.execution === "subagent") {
     const results = await runDeterministicDelegation(phase, wfCtx, ctx, alive, pi);
     if (!alive()) return;
+
+    // Sprint verdict parsing at DELEGATION time (plan B4 / D1): the raw
+    // subagent outputs are the source of truth — never the main model's
+    // paraphrase. Dual-channel check against on-disk artifacts; any
+    // disagreement ⇒ parsed=null ⇒ D4 park (no attempt burned).
+    if (state.workflowId === "sprint" && phase.loopBackTo) {
+      const mergedOutputs = results.map((r) => r.result.output ?? "").join("\n\n");
+      const outcome = parseHandoffVerdicts(mergedOutputs);
+      let parsed = outcome.parsed;
+      if (parsed && !verifyArtifactVerdicts(parsed, ctx.cwd, state.sprintNumber)) {
+        parsed = null; // HANDOFF says X, artifact disagrees ⇒ fail closed
+      }
+      if (!parsed) {
+        const parkedState = parkForUnreadableVerdict(
+          { ...state, pendingVerdict: { phaseId: phase.id, parsed: null, excerpt: outcome.lines.join("\n") || mergedOutputs.slice(0, 500) } },
+          phase.id,
+        );
+        saveState(pi, parkedState);
+        notify(
+          `gstack sprint: no trustworthy verdict found for "${phase.id}" — pipeline parked for manual review (/gstack next). No retry budget consumed.`,
+          "warning",
+        );
+        return;
+      }
+      const withVerdict = { ...state, pendingVerdict: { phaseId: phase.id, parsed, excerpt: outcome.lines.join("\n") } };
+      saveState(pi, withVerdict);
+      state = withVerdict;
+    }
+
     // STEP 0 telemetry: persist per-step measurements (persistence only —
     // every number already exists on SpawnResult).
     for (const [stepIndex, { agent, result }] of results.entries()) {
@@ -381,6 +429,8 @@ async function runDeterministicDelegation(
         cwd: wfCtx.cwd,
         // STEP 5a: per-class timeout resolved from the phase id.
         phaseId: phase.id,
+        // E4/D10 model tiers: inert unless GSTACK_PI_MODEL_FAST/_STRONG are set.
+        modelOverride: modelTierFor(phase.id),
         shouldAbort: () => !alive(),
         onActivity: setStatus,
         // STEP 5b: observe-only liveness — dual sink (notify + run report).

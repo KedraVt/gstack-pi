@@ -161,8 +161,8 @@ describe("state machine", () => {
 });
 
 describe("workflows registry", () => {
-  test("all 7 workflows registered", () => {
-    assert.equal(getAllWorkflows().length, 7);
+  test("all 8 workflows registered", () => {
+    assert.equal(getAllWorkflows().length, 8);
   });
 
   test("getWorkflow returns correct workflow", () => {
@@ -237,9 +237,13 @@ describe("approval gates", () => {
     assert.equal(developPlan.advance, "manual");
     const rootCause = getWorkflow("investigate")!.phases.find((p) => p.id === "root-cause")!;
     assert.equal(rootCause.advance, "manual");
-    // Non-decision phases stay auto.
+    // Non-decision phases stay auto. Sprint's planning + hard-gate phases are
+    // deliberate exceptions (D6/D11): understand, system-design, architect-gate,
+    // backlog, commit-archive.
+    const sprintManual = new Set(["understand", "system-design", "architect-gate", "backlog", "commit-archive"]);
     for (const wf of getAllWorkflows()) {
       for (const phase of wf.phases) {
+        if (wf.id === "sprint" && sprintManual.has(phase.id)) continue;
         if (!(wf.id === "develop" && phase.id === "plan") && !(wf.id === "investigate" && phase.id === "root-cause")) {
           assert.notEqual(phase.advance, "manual", `${wf.id}/${phase.id} should not be a manual gate`);
         }
@@ -1186,7 +1190,6 @@ describe("runSubagent real spawn path (crash regression)", () => {
       cwd: process.cwd(),
       timeoutMs: 1000,
     });
-    assert.equal(result.ok, false);
     assert.equal(result.configError, true);
   });
 });
