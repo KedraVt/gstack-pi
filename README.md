@@ -15,6 +15,15 @@ One extension, two layers:
 - **Documentation phases** — optional doc-update phase on `develop` and `ship` (Diataxis coverage map, chained generation for missing docs).
 - **`qa-report` workflow** — full QA methodology, report-only, never modifies code.
 - **`gstack_start` tool** — programmatic workflow entry point (usable by any agent, including subagents).
+
+## What's new (feat/sprint-workflow branch)
+
+- **`sprint` workflow (opt-in)** — a 10-phase agile delivery pipeline distilled from `.agents-clean` methodology: understand → user-story → capability → system-design → ⏸ architect gate → backlog → implement → devsecops review → QA verdict → commit/archive. Planning artifacts (`user-story_XX.md`, `system-design_XX.md`, `tasks_XX.md`, …) live in the project root and archive to `.gstack/sprints/sprint_XX/` when the sprint goes green.
+- **Deterministic verdict routing** — review gates emit machine-parseable verdict lines (`status == red|green|orange`, `security-review == approved|rejected`) inside a `## HANDOFF` section. The orchestrator parses them fail-closed (whitelist-only values, containment-checked), cross-verifies them against the artifact files on disk (dual channel: chat + disk must agree), and routes deterministically — never on the model's say-so.
+- **Security freeze** — a critical/high security rejection parks the whole sprint until a human types the confirmation phrase in the panel; medium/low rejections loop back to implement normally.
+- **Bounded loop-backs** — rejected reviews return work to the implementing phase with extracted blocker feedback; after N attempts (configurable) the sprint parks for human decision instead of looping forever.
+- **Unreadable-verdict park** — if a gate's output can't be parsed into a known verdict, the sprint parks WITHOUT burning an attempt; the panel shows only the failing lines so you can approve/loop/inspect deliberately.
+- **Strict BE→FE chain** — implementation runs backend-developer then frontend-developer sequentially per task wave; model tiers (`GSTACK_PI_MODEL_STRONG/FAST`) let judgment phases run on stronger models while mechanical phases stay cheap.
 - **Fixed**: phase instructions are now delivered with `followUp` streaming behavior — eliminates the "Agent is already processing" error that silently dropped phase handoffs.
 
 ## Requirements
@@ -66,6 +75,7 @@ The menu adapts to your git context:
 | `ship` | pre-checks → review → test → push+PR → verify CI → docs (opt.) | Release pipeline |
 | `review` | diff analysis → findings → fix (optional) | Code review |
 | `quick` | single action picker | One-shot actions |
+| `sprint` | understand → user-story → capability → system-design (⏸) → backlog → implement (BE→FE) → devsecops-review → qa-verdict → commit+archive | Full agile delivery with deterministic gates, security freeze, bounded retries |
 
 ⏸ = decision phase: the workflow pauses in `awaiting_approval` until you run `/gstack next`.
 
@@ -230,7 +240,7 @@ gstack-pi/
 │   ├── types.ts             Workflow, Phase, State interfaces
 │   ├── state.ts             State machine (persist via pi appendEntry; approval gates)
 │   ├── git.ts               Git context detection
-│   ├── workflows.ts         7 workflow definitions (data-driven, skill mappings)
+│   ├── workflows.ts         8 workflow definitions (data-driven, skill mappings)
 │   ├── templates.ts         Phase instruction builders + skill tiering + plan-file protocol
 │   ├── executor.ts          Phase execution, deterministic subagent delegation, skip logic
 │   ├── skills.ts            Skill registry: digests, DoD gates, paths
@@ -249,6 +259,7 @@ gstack-pi/
 │   └── sync-skills.ts       Re-sync skills with path rewriting
 ├── test/
 │   └── orchestrator.test.ts Unit tests (state machine, gates, workflows, tiering, intents)
+│   └── sprint.test.ts        Sprint workflow tests (verdicts, routing, loop engine, parks)
 ├── TODOS.md                 Backlog: deferred features, skill integrations, follow-ups
 ├── update.sh                Pull submodule + build + deploy + feature detection
 └── .gitignore               Excludes runtime/ (built artifacts)
