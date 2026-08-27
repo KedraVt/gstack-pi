@@ -246,6 +246,8 @@ gstack-pi/
 │   ├── executor.ts          Phase execution, deterministic subagent delegation, skip logic
 │   ├── skills.ts            Skill registry: digests, DoD gates, paths
 │   ├── spawn.ts             Deterministic subagent execution (pi --mode json)
+│   ├── sprint.ts            Sprint numbering discovery + root/archive anomaly guards
+│   ├── verdicts.ts          Deterministic verdict parsing, dual-channel verification, retry feedback
 │   ├── config.ts            Feature flags (GSTACK_PI_SKILLS / _DETERMINISTIC / _MANUAL_GATES)
 │   ├── command.ts           /gstack command handler (+ /gstack next)
 │   └── router.ts            Input intent detection (transform, never block)
@@ -383,7 +385,7 @@ the root-cause scout->planner chain collapses to ONE validate-only planner step.
 | `GSTACK_PI_LOOPBACKS` | on | sprint loop-back engine; `off` ⇒ negative gate verdicts pause instead of retrying |
 | `GSTACK_PI_VERDICTS` | on | deterministic verdict parsing; `off` ⇒ gates rely on human reading, no auto-routing |
 | `GSTACK_PI_SPRINT_MAX_ATTEMPTS` | 4 | consecutive implement-rerun ceiling per review gate (counter resets on gate approval) |
-| `GSTACK_PI_ARCH_MAX_ATTEMPTS` | 5 | system-design rerun ceiling after architect rejections |
+| `GSTACK_PI_ARCH_MAX_ATTEMPTS` | 5 | system-design rerun ceiling after architect rejections (reads `GSTACK_PI_SPRINT_ARCH_MAX_ATTEMPTS` / `GSTACK_PI_ARCH_MAX_ATTEMPTS`) |
 | `GSTACK_PI_MODEL_FAST` / `_STRONG` | unset | model tiers for mechanical vs judgment-heavy phases; unset keeps each agent's own default (inert) |
 | `GSTACK_PI_STRICT_CONTENT` | off | heuristic scan + ASCII-sentinel enveloping of page-content tool output (WP2 defense-in-depth) |
 | `GSTACK_PI_SUBAGENT_TIMEOUT` | 1200 | fallback timeout, seconds |
