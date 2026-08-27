@@ -5,7 +5,7 @@
  *
  * Pipeline per skill (SKILLS list read from update.sh):
  *   input : source/<skill>/SKILL.md            (raw upstream, references ~/.claude/skills/gstack)
- *   output: skills/<gstack-skill>/SKILL.md     (pi frontmatter + adapter note + rewritten paths)
+ *   output: skills/gstack/<gstack-skill>/SKILL.md  (pi frontmatter + adapter note + rewritten paths)
  *
  * Usage:
  *   bun run scripts/adapt-skills.ts           adapt all skills, write changed files
@@ -22,7 +22,9 @@ const EXT_ROOT = resolve(here, "..");
 const SOURCE_DIR = process.env.GSTACK_SOURCE_DIR
   ? resolve(process.env.GSTACK_SOURCE_DIR)
   : join(EXT_ROOT, "source");
-const SKILLS_OUT_DIR = join(EXT_ROOT, "skills");
+// gstack skills are nested one level down (skills/gstack/) so the same root can
+// also host skills/kedra/ (.agents-clean raw sources) without name conflicts.
+const SKILLS_OUT_DIR = join(EXT_ROOT, "skills", "gstack");
 
 // Absolute targets baked into adapted docs (forward slashes: valid in bash snippets on Windows).
 const EXT_URI = EXT_ROOT.replace(/\\/g, "/");
@@ -270,7 +272,7 @@ function main() {
 
   for (const skill of skills) {
     // The root "gstack" skill is a bespoke router document maintained by hand in
-    // skills/gstack/ — it is NOT derived from source/browse and must never be regenerated.
+    // skills/gstack/gstack/ — it is NOT derived from source/browse and must never be regenerated.
     if (skill === "gstack") {
       console.log(`preserve ${skill} (hand-maintained router, not upstream-derived)`);
       identical++;

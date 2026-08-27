@@ -26,6 +26,7 @@ One extension, two layers:
 - **Unreadable-verdict park** — if a gate's output can't be parsed into a known verdict, the sprint parks WITHOUT burning an attempt; the panel shows only the failing lines so you can approve/loop/inspect deliberately.
 - **Strict BE→FE chain** — implementation runs backend-developer then frontend-developer sequentially per task wave; model tiers (`GSTACK_PI_MODEL_STRONG/FAST`) let judgment phases run on stronger models while mechanical phases stay cheap.
 - **Fixed**: phase instructions are now delivered with `followUp` streaming behavior — eliminates the "Agent is already processing" error that silently dropped phase handoffs.
+- **Raw skill library split** — the bundled skill surface is organized in two folders: `skills/gstack/` (23 cherry-picked gstack skills, manual `/skill:gstack-*` invocation) and `skills/kedra/` (18 full `.agents-clean` methodology skills, verbatim, manual `/skill:<name>` invocation — the whole source library except `acceptance-criteria-backend/-frontend`, which live inside the sub-agent bodies). The orchestrator's digest injection is unchanged.
 
 ## Requirements
 
@@ -97,7 +98,18 @@ The workflow decides when skill knowledge applies — the model never has to gue
 - Every mapped phase carries a **distilled digest** (~2K tokens) extracted from the corresponding gstack SKILL.md (`skills-distilled/`)
 - Main phases embed the full digest; subagent phases receive it inside their task string while orchestrator instructions carry only the compact **DoD + best-practices gate**
 - Repeated deliveries within one run degrade to the DoD gate (~40% skill-token savings)
-- Wired skills: investigate, qa, review, ship, office-hours, plan-eng-review, document-release (+generate), grilling. All 23 bundled skills stay manually invocable via `/skill:gstack-*`.
+- Wired skills: investigate, qa, review, ship, office-hours, plan-eng-review, document-release (+generate), grilling. All 41 bundled skills stay manually invocable via `/skill:` (23 under the `gstack-` prefix, 18 kedra skills under their own name).
+
+### Raw skill library (`skills/gstack/` + `skills/kedra/`)
+
+Pi's recursive discovery (`pi-agent-core` harness) loads `SKILL.md` files at any depth, so both families coexist under one `"skills": ["./skills"]` root:
+
+| Folder | Contents | Invocation | Source |
+|---|---|---|---|
+| `skills/gstack/` | 23 cherry-picked gstack skills (router nested at `gstack/gstack/`) | `/skill:gstack-qa`, `/skill:gstack-spec`, … | upstream gstack, adapted by `scripts/adapt-skills.ts` |
+| `skills/kedra/` | 18 full `.agents-clean` skills — sprint methodology, process discipline (Iron Laws), security/infra, code quality | `/skill:systematic-debugging`, `/skill:adr`, `/skill:tasks`, … | `C:\Users\Mattia\Desktop\.agents-clean\skills\`, copied verbatim 2026-08-27 |
+
+`kedra/` ships the FULL source methodology (the digests in `skills-distilled/gstack-sprint-*.md` remain the trimmed runtime form). Deliberately excluded: `acceptance-criteria-backend` and `acceptance-criteria-frontend` — already folded into the `backend-developer`/`frontend-developer` sub-agent bodies (TODOS D12). Companion files (e.g. `testing-anti-patterns.md`, `systematic-debugging` reference material) are copied too — pi resolves skill-relative paths against the skill's own directory.
 
 ### Automatic routing
 
@@ -134,16 +146,17 @@ reads the daemon's dialog ring buffer, `gstack_perf` returns page metrics, and
 
 Full list: see `tools.generated.ts` (65 commands from the gstack browse CLI).
 
-### Skills (23)
+### Skills (41)
 
-Cherry-picked gstack skills remain available for direct invocation:
+Two families, two folders:
 
 ```
-/skill:gstack-qa, /skill:gstack-review, /skill:gstack-ship,
-/skill:gstack-investigate, /skill:gstack-spec, /skill:gstack-autoplan, ...
+skills/
+├── gstack/   23 cherry-picked gstack skills   → /skill:gstack-qa, /skill:gstack-ship, /skill:gstack-spec, ...
+└── kedra/    18 .agents-clean methodology     → /skill:systematic-debugging, /skill:tdd (test-driven-development), ...
 ```
 
-These coexist with the orchestrator. Use them when you want the raw gstack workflow without the guided pipeline.
+They coexist with the orchestrator. Use them when you want the raw methodology without the guided pipeline. Registry skills referenced by the orchestrator's digest injection resolve their deep-dive SKILL.md under `skills/gstack/<id>/` (see `orchestrator/skills.ts`).
 
 ## Environment Variables
 
@@ -194,7 +207,7 @@ To include new tools: run `bun run scripts/gen-tools.ts`.
 
 ### Skill adaptation pipeline
 
-`scripts/adapt-skills.ts` translates freshly-pulled upstream SKILL.md files (written for Claude Code) into the pi form bundled in `skills/`: frontmatter rebuild, Pi adapter note, and path mapping to this extension's `runtime/bin`, `source/bin` and `source/`. It runs automatically as step 8 of `update.sh`; standalone usage:
+`scripts/adapt-skills.ts` translates freshly-pulled upstream SKILL.md files (written for Claude Code) into the pi form bundled in `skills/gstack/`: frontmatter rebuild, Pi adapter note, and path mapping to this extension's `runtime/bin`, `source/bin` and `source/`. It runs automatically as step 8 of `update.sh`; standalone usage:
 
 ```bash
 bun run scripts/adapt-skills.ts --check          # dry-run: report diffs, write nothing
@@ -251,12 +264,10 @@ gstack-pi/
 │   ├── config.ts            Feature flags (GSTACK_PI_SKILLS / _DETERMINISTIC / _MANUAL_GATES)
 │   ├── command.ts           /gstack command handler (+ /gstack next)
 │   └── router.ts            Input intent detection (transform, never block)
+├── skills/                  Raw skill library, recursive discovery (manual /skill: use)
+│   ├── gstack/              23 cherry-picked gstack skills (router at gstack/gstack/)
+│   └── kedra/               18 .agents-clean methodology skills, verbatim full sources
 ├── skills-distilled/        Distilled methodology digests (~2K tokens each) + vendored grilling protocol
-├── source/                  Git submodule → garrytan/gstack
-├── runtime/                 Built by update.sh (gitignored)
-│   ├── browse/dist/         Compiled browse binary + server bundle
-│   └── bin/                 9 essential gstack helper scripts
-├── skills/                  23 cherry-picked SKILL.md files (manual /skill:gstack-* use)
 ├── scripts/
 │   ├── gen-tools.ts         Regenerate tools from source/ commands
 │   └── sync-skills.ts       Re-sync skills with path rewriting

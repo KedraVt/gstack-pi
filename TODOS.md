@@ -8,6 +8,12 @@ The vendored gstack source keeps its own `source/TODOS.md`; this file tracks ext
 
 ### Non-distilled .agents-clean skills — fold into existing gstack skills (D12)
 
+> **Update 2026-08-27:** the FULL raw sources of the .agents-clean skills now ship verbatim in
+> `skills/kedra/` (18 of 20 — `acceptance-criteria-backend`/`-frontend` excluded, already living
+> in the sub-agent bodies) for manual `/skill:` invocation. The disposition below still governs
+> the **digest-injection** side: which methodology the workflows inject and which mechanisms
+> absorb it.
+
 None forgotten; each maps to an existing mechanism and lands when its host skill next evolves:
 
 - `systematic-debugging` → deepen **gstack-investigate** digest (hypothesis-testing cadence overlap; merge unique sections only)
@@ -16,7 +22,7 @@ None forgotten; each maps to an existing mechanism and lands when its host skill
 - `code-simplification` → cross-reference **ponytail** `/gstack simplify` (better gate design already tracked here — do not double-inject)
 - `acceptance-criteria-backend` / `-frontend` → DONE: folded into backend-/frontend-developer agent bodies at port time
 - `agent-introspection-debugging` → future standalone digest if agent-self-debugging demand appears
-- `code-tour` → future `skills/` dir entry (explanation tooling, orthogonal to execution)
+- `code-tour` → DONE at raw level: `skills/kedra/code-tour/` (digest/execution integration still future, orthogonal to execution)
 - `manim-video`, `add-model` → REJECTED (domain utilities of the source project, zero workflow relation)
 
 Deferred from the sprint-workflow integration (D12) — deliberate scope cuts, each

@@ -37,7 +37,10 @@ export interface SkillInfo {
 interface RegistryEntry {
   summary: string;
   dod: string;
-  /** Directory name under skills/, omitted for vendored protocols. */
+  /** Directory relative to skills/, omitted for vendored protocols.
+   *  Upstream gstack skills live under skills/gstack/<id>/; .agents-clean
+   *  raw sources (skills/kedra/) are manual-invocation only and are never
+   *  referenced from the registry. */
   upstreamDir?: string;
 }
 
@@ -135,7 +138,10 @@ export function getSkillIds(): string[] {
 export function getSkillInfo(id: string): SkillInfo | null {
   const entry = REGISTRY[id];
   if (!entry) return null;
-  const upstreamDir = entry.upstreamDir ?? (id.startsWith("gstack-") ? id : undefined);
+  // gstack skills are nested under skills/gstack/<id>/ (kedra/gstack split).
+  // Registry ids without a bundled SKILL.md (sprint digests, fix-strategy)
+  // resolve to a non-existent path and degrade to fullPath: null as before.
+  const upstreamDir = entry.upstreamDir ?? (id.startsWith("gstack-") ? `gstack/${id}` : undefined);
   const fullPath = upstreamDir ? join(SKILLS_DIR, upstreamDir, "SKILL.md") : null;
   return {
     id,
