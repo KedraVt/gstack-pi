@@ -115,6 +115,25 @@ const investigate: Workflow = {
       agent: "worker",
       optional: false,
       skills: ["gstack-investigate"],
+      // Context fix (2026-08-28 session post-mortem): this phase previously
+      // fell back to the generic "fix" task template, whose {findings_summary}
+      // placeholder only resolves in the review workflow (which has a phase
+      // id "findings"). Here it silently interpolated to "(not yet
+      // available)", so the worker ran with zero bug context, audited a green
+      // test suite, and fixed nothing. Pin the context explicitly instead.
+      task: `## DELIVERABLE
+All diagnosed bugs fixed with minimal, targeted changes, suite green, and a regression test per bug per the fix plan.
+
+## STOP CONDITION
+Stop when: every bug in the diagnosis is fixed with a regression test and the suite is green.
+
+## CONTEXT
+Bug: {goal} | Branch: {branch}
+Reproduction context: {reproduce_summary}
+Root-cause analysis + fix plan from the prior specialist:
+{root-cause_summary}
+
+Apply the planned fixes. Run the tests after each fix. Report what was fixed.`,
     },
     {
       id: "verify",
@@ -177,6 +196,22 @@ const qa: Workflow = {
       // the fix loop is structurally skipped (falsifiable, via skip.ts).
       skipWhen: (ctx) => allTestsPassed(ctx.state.results["test"]?.summary),
       skills: ["gstack-qa"],
+      // Context fix (2026-08-28 session post-mortem): same class of bug as
+      // investigate/fix — the generic "fix" template's {findings_summary}
+      // never resolves here (no "findings" phase), so the worker got
+      // "(not yet available)" instead of the QA findings. Use {report_summary}.
+      task: `## DELIVERABLE
+Minimal fixes applied for the QA findings below, tests green, regression coverage for CRITICAL/HIGH findings.
+
+## STOP CONDITION
+Stop when: all findings are addressed.
+
+## CONTEXT
+Goal: {goal} | Branch: {branch}
+QA findings (from the report phase):
+{report_summary}
+
+Apply minimal, targeted fixes. Run tests after each fix. Report what was fixed.`,
     },
   ],
 };

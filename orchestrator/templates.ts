@@ -692,7 +692,12 @@ Sprint {sprint} | Goal: {goal} | Branch: {branch}
 This phase runs ONLY after explicit user approval. Steps: 1) verify suite green, 2) commit any uncommitted work (Conventional Commits), 3) move ALL sprint artifacts (user-story/capability/system-design/ADR/tasks/QA/review files) into .gstack/sprints/sprint_XX/, 4) write manifest.md listing the moved files.`,
   };
 
-  let task = tasks[phase.id] ?? `Execute the "${phase.name}" phase for: {goal}. Use available tools and report results.`;
+  // Explicit phase.task wins over the generic per-id template (same
+  // precedence as chain steps). Session post-mortem 2026-08-28: the
+  // investigate/qa "fix" phases could not carry context any other way, and
+  // the shared generic template's {findings_summary} silently interpolated
+  // to "(not yet available)" outside the review workflow.
+  let task = phase.task ?? tasks[phase.id] ?? `Execute the "${phase.name}" phase for: {goal}. Use available tools and report results.`;
   const vd = phase.variant === "report-only"
     ? "\n\n**REPORT-ONLY MODE**: do NOT fix anything and do NOT commit. The report is the entire deliverable."
     : "";

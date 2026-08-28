@@ -3,6 +3,14 @@ export interface WorkflowPhase {
   name: string;
   execution: "main" | "subagent";
   agent?: string;
+  /**
+   * Optional task override for single-agent phases. When absent, the generic
+   * template keyed by phase id is used (buildAgentTask). Placeholders
+   * ({goal}, {branch}, {x}_summary) are interpolated like chain-step tasks.
+   * Guard: every {x}_summary used here MUST match a phase id in the same
+   * workflow — covered by the orchestrator coherence test.
+   */
+  task?: string;
   chain?: Array<{
     agent: string;
     task: string;

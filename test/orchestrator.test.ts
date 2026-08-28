@@ -390,6 +390,35 @@ test("root-cause phase tasks carry the validate-first directive", () => {
       }
     }
   });
+
+  // Context-loss guard (session post-mortem 2026-08-28): task templates are
+  // shared across workflows by phase id, so a {x}_summary placeholder only
+  // resolves when a phase with id "x" exists in the SAME workflow. The
+  // investigate and qa "fix" phases reused the review workflow's generic
+  // template with {findings_summary}, which silently interpolated to
+  // "(not yet available)" — the worker then ran with zero bug context and
+  // fixed nothing. With every in-workflow phase pre-recorded below, the only
+  // way "(not yet available)" can survive interpolation is a token pointing
+  // at a phase that can never exist.
+  test("every subagent task's {x}_summary token maps to a phase in the same workflow", () => {
+    for (const wfid of getWorkflowIds()) {
+      const wf = getWorkflow(wfid)!;
+      const results: Record<string, { status: "completed"; summary: string }> = {};
+      for (const p of wf.phases) results[p.id] = { status: "completed", summary: `recorded summary of ${p.id}` };
+      for (const phase of wf.phases) {
+        if (phase.execution !== "subagent") continue;
+        const base = makeCtx(wfid, wf.phases.indexOf(phase));
+        const ctx: WorkflowContext = { ...base, state: { ...base.state, results } };
+        const plan = buildDeterministicPlan(phase, ctx);
+        for (const step of plan) {
+          assert.ok(
+            !step.task.includes("(not yet available)"),
+            `${wfid}/${phase.id}: task references a {x}_summary phase that does not exist in this workflow — worker runs without context. Task starts with: ${step.task.slice(0, 120)}`,
+          );
+        }
+      }
+    }
+  });
 });
 
 describe("documentation phases", () => {
