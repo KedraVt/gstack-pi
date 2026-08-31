@@ -106,6 +106,12 @@ export interface SpawnRequest {
   cwd: string;
   /** Phase id — resolves the per-class timeout via config.subagentTimeoutFor. */
   phaseId?: string;
+  /**
+   * Model-tier override (plan E4/D10). Wins over the agent definition's own
+   * model when set. Inert unless GSTACK_PI_MODEL_FAST/GSTACK_PI_MODEL_STRONG
+   * are configured (config.modelTierFor) — the default keeps agent defaults.
+   */
+  modelOverride?: string;
   timeoutMs?: number;
   /**
    * Polled once per second; when it returns true (e.g. the session was
@@ -348,7 +354,8 @@ export async function runSubagent(req: SpawnRequest): Promise<SpawnResult> {
   }
 
   const args: string[] = ["--mode", "json", "-p", "--no-session"];
-  if (agent.model) args.push("--model", agent.model);
+  const effectiveModel = req.modelOverride ?? agent.model;
+  if (effectiveModel) args.push("--model", effectiveModel);
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
   let tmpPromptDir: string | null = null;

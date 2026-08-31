@@ -61,6 +61,23 @@ export function strictContent(): boolean {
   return parse(process.env.GSTACK_PI_STRICT_CONTENT) ?? false;
 }
 
+// --- Sprint workflow kill-switches (MERGE-PLAN §12 / BUG-6) ------------------
+
+/** Register the sprint workflow at all. Off ⇒ hidden from menu/router entirely. */
+export function sprintEnabled(): boolean {
+  return parse(process.env.GSTACK_PI_SPRINT) ?? true;
+}
+
+/** Loop-back engine. Off ⇒ a negative gate verdict pauses instead of retrying. */
+export function loopbacksEnabled(): boolean {
+  return parse(process.env.GSTACK_PI_LOOPBACKS) ?? true;
+}
+
+/** Deterministic verdict parsing. Off ⇒ gates rely on human reading; no auto-routing. */
+export function verdictsEnabled(): boolean {
+  return parse(process.env.GSTACK_PI_VERDICTS) ?? true;
+}
+
 // --- Numeric configuration (STEP 5a / COR-06, COR-10) -------------------------
 
 const warnedOnce = new Set<string>();
@@ -129,6 +146,15 @@ const TIMEOUT_CLASS_MAP: Record<string, TimeoutClass> = {
   "findings": "VERIFY",
   // quick
   "action": "WORK",
+  // sprint (main phases never spawn subagents, but the 1:1 map invariant covers every id)
+  "user-story": "EXPLORE",
+  "capability": "EXPLORE",
+  "system-design": "VERIFY",
+  "architect-gate": "VERIFY",
+  "backlog": "EXPLORE",
+  "devsecops-review": "VERIFY",
+  "qa-verdict": "WORK",
+  "commit-archive": "VERIFY",
 };
 
 /** Resolve the timeout class of a phase id (null = unmapped). */
@@ -145,6 +171,40 @@ export function subagentTimeoutFor(phaseId: string): number {
   else if (cls === "VERIFY") sec = numberEnv("GSTACK_PI_TIMEOUT_VERIFY", 900) as number;
   else sec = numberEnv("GSTACK_PI_SUBAGENT_TIMEOUT", 1200) as number;
   return sec * 1000;
+}
+
+/**
+ * Sprint loop ceilings (plan B5). GSTACK_PI_SPRINT_MAX_ATTEMPTS bounds
+ * CONSECUTIVE implement reruns per review gate: the counter resets when a gate
+ * approves (state.ts), so devsecops and QA each get a fresh ceiling within the
+ * same sprint — worst case ≈ 2× the ceiling total implement runs.
+ * GSTACK_PI_SPRINT_ARCH_MAX_ATTEMPTS bounds system-design reruns after
+ * architect rejections.
+ */
+export function sprintMaxAttempts(): number {
+  return numberEnv("GSTACK_PI_SPRINT_MAX_ATTEMPTS", 4) as number;
+}
+
+export function sprintArchMaxAttempts(): number {
+  return numberEnv("GSTACK_PI_SPRINT_ARCH_MAX_ATTEMPTS", 5) as number;
+}
+
+// --- Model tiers (E4 / D10): inert unless both env vars are meaningful ------
+
+/**
+ * Judgment-heavy phases route to GSTACK_PI_MODEL_STRONG when set; everything
+ * else to GSTACK_PI_MODEL_FAST. UNSET envs mean "keep the agent definition's
+ * own model" — the feature is fully inert by default.
+ */
+const STRONG_PHASES = new Set(["implement", "architect-gate", "devsecops-review", "qa-verdict"]);
+
+export function modelTierFor(phaseId: string): string | undefined {
+  const strong = process.env.GSTACK_PI_MODEL_STRONG;
+  const fast = process.env.GSTACK_PI_MODEL_FAST;
+  if (strong === undefined && fast === undefined) return undefined;
+  return STRONG_PHASES.has(phaseId)
+    ? (strong || undefined)
+    : (fast || undefined);
 }
 
 /**

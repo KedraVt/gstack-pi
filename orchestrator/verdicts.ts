@@ -1,0 +1,350 @@
+/**
+ * Deterministic verdict parsing for the sprint workflow (plan B4 / D1–D4).
+ *
+ * SECURITY: everything a subagent emits is UNTRUSTED INPUT — repo content can
+ * plant literal verdict strings anywhere in the report. Routing therefore
+ * happens ONLY if ALL guards hold (guards mirror skip.ts):
+ *  1. the `variable == value` line appears inside the structured `## HANDOFF`
+ *     section of the subagent's output;
+ *  2. every value is matched against a CLOSED whitelist after case
+ *     normalization; hedged or malformed values ("high?", "medium-high",
+ *     "approved but...") make the WHOLE parse null — never guessed at;
+ *  3. each claimed verdict is confirmed by its on-disk artifact: the artifact
+ *     must exist and contain the same `variable == value` line within its
+ *     ≤64KB tail (dual channel: HANDOFF + disk must agree);
+ *  4. ambiguity ⇒ null ⇒ D4 manual park WITHOUT burning an attempt.
+ *
+ * The orchestrator NEVER advances on doubt.
+ */
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+import type { ParsedVerdict, VerdictSeverity } from "./types.ts";
+import { extractHandoff } from "./handoff.ts";
+import { pad2 } from "./sprint.ts";
+
+/** Closed value whitelist (case-normalized to lowercase). Anything else ⇒ null. */
+const VALUE_WHITELIST = ["approved", "rejected", "green", "red", "orange", "success", "failed"] as const;
+
+/** Closed severity whitelist. Hedged values ⇒ null. */
+const SEVERITY_WHITELIST = ["critical", "high", "medium", "low"] as const;
+
+/**
+ * Variables the parser recognizes anywhere in a HANDOFF. Unknown
+ * `x == y`-shaped lines are ignored as prose; KNOWN variables carrying an
+ * out-of-whitelist value are treated as tampered/hedged ⇒ whole parse fails.
+ */
+export const KNOWN_VARIABLES = [
+  "status", // qa-engineer qa-artifact_XX.md
+  "code-review", // devsecops code-review-artifact.md
+  "security-review", // devsecops security-review-artifact.md
+  "severity", // required on security rejection
+  "docker-build", // devsecops docker-build-report.md
+  "docker-security", // devsecops docker-build-report.md
+  "software-architect-review", // software-architect-artifact_n.md
+] as const;
+
+const VAR_LINE_RE = /^\s*([A-Za-z][A-Za-z0-9 _-]*?)\s*==\s*(\S[^\n]*)$/;
+
+/** Values that mean "the gated work did not pass" — routing negatives. */
+export const NEGATIVE_VALUES = new Set(["rejected", "failed", "red", "orange"]);
+
+/**
+ * Per-phase expectation maps (BUG-1 fix): every known verdict variable must
+ * land on an explicitly expected POSITIVE value or a routing NEGATIVE.
+ * Whitelisted-but-off-map values (e.g. `status == success` at the QA gate)
+ * park for human decision instead of silently advancing.
+ */
+export const PHASE_EXPECTATIONS: Record<string, Record<string, readonly string[]>> = {
+  "architect-gate": { "software-architect-review": ["approved"] },
+  "qa-verdict": { status: ["green"] },
+  "devsecops-review": {
+    "code-review": ["approved"],
+    "security-review": ["approved", "rejected"],
+    "docker-build": ["success", "failed"],
+    "docker-security": ["approved", "rejected"],
+  },
+};
+
+export interface VerdictParseOutcome {
+  parsed: ParsedVerdict | null;
+  /** Raw verdict-shaped lines found in the HANDOFF, for the D4 panel display. */
+  lines: string[];
+}
+
+/**
+ * Parse verdict variable/value pairs from the `## HANDOFF` section of a
+ * subagent output (containment starts at the FIRST `## HANDOFF` marker and
+ * runs to end-of-text; chain steps are parsed separately then merged — see
+ * mergeParseOutcomes). Returns `{parsed: null}` when no valid verdict set can be
+ * extracted: missing HANDOFF, no known-variable lines, or any known variable
+ * carrying an out-of-whitelist (hedged/malformed) value.
+ */
+export function parseHandoffVerdicts(output: string): VerdictParseOutcome {
+  // Guard 1 (mirrors skip.ts): only text at or after the literal `## HANDOFF`
+  // marker is scanned. extractHandoff() returns the WHOLE output for short
+  // reports (<6KB), so without this containment check a verdict line planted
+  // in a short report's body would parse. Fail closed on missing marker.
+  const extracted = extractHandoff(output ?? "").text;
+  const markerIdx = extracted.indexOf("## HANDOFF");
+  if (markerIdx < 0 || !extracted.includes("==")) {
+    return { parsed: null, lines: [] };
+  }
+  const handoff = extracted.slice(markerIdx);
+
+  const lines: string[] = [];
+  const verdicts: Record<string, string> = {};
+  let severity: VerdictSeverity | undefined;
+
+  for (const raw of handoff.split("\n")) {
+    const match = VAR_LINE_RE.exec(raw);
+    if (!match) continue;
+    const variable = match[1].trim().toLowerCase().replace(/\s+/g, "-");
+    if (!(KNOWN_VARIABLES as readonly string[]).includes(variable)) continue;
+
+    lines.push(raw.trim());
+    const value = match[2].trim().toLowerCase();
+
+    if (variable === "severity") {
+      if (!(SEVERITY_WHITELIST as readonly string[]).includes(value)) {
+        return { parsed: null, lines }; // hedged/malformed severity ⇒ D4 panel (D3)
+      }
+      // BUG-4: a second, DIFFERENT severity line is self-contradiction ⇒ null.
+      if (severity !== undefined && severity !== value) {
+        return { parsed: null, lines };
+      }
+      severity = value as VerdictSeverity;
+      continue;
+    }
+
+    if (!(VALUE_WHITELIST as readonly string[]).includes(value)) {
+      return { parsed: null, lines }; // fail-closed on any malformed known verdict
+    }
+    // BUG-4: contradictory duplicate of a variable we already captured ⇒ null
+    // (identical repeats are redundant, not conflicting — keep first).
+    if (verdicts[variable] !== undefined && verdicts[variable] !== value) {
+      return { parsed: null, lines };
+    }
+    verdicts[variable] = value;
+  }
+
+  if (Object.keys(verdicts).length === 0) {
+    return { parsed: null, lines };
+  }
+  // D3 fail-closed: a security rejection WITHOUT a parsable severity must
+  // never auto-route — it could be a critical hole looping silently. Missing
+  // or hedged severity ⇒ whole parse null ⇒ D4 manual panel.
+  if (verdicts["security-review"] === "rejected" && !severity) {
+    return { parsed: null, lines };
+  }
+  return { parsed: { verdicts, severity }, lines };
+}
+
+/**
+ * Merge per-step parse outcomes across a chain (review fix W1): parsing the
+ * JOINED outputs would keep only the LAST ## HANDOFF once the total exceeds
+ * extractHandoff's whole-output threshold — silently dropping earlier chain
+ * steps' verdicts and parking every realistic gate run. Each step parses
+ * independently; merged maps conflict on any variable/severity disagreement
+ * ⇒ null (preserves BUG-4 contradiction semantics).
+ */
+export function mergeParseOutcomes(outcomes: VerdictParseOutcome[]): VerdictParseOutcome {
+  const lines = outcomes.flatMap((o) => o.lines);
+  const parsedResults = outcomes.map((o) => o.parsed);
+  if (parsedResults.every((p) => p === null)) {
+    return { parsed: null, lines };
+  }
+  // Any step failing to produce a trustworthy verdict ⇒ null overall:
+  // a gate needs EVERY chain step's verdict to route deterministically.
+  if (parsedResults.some((p) => p === null)) {
+    return { parsed: null, lines };
+  }
+  const verdicts: Record<string, string> = {};
+  let severity: VerdictSeverity | undefined;
+  for (const p of parsedResults as NonNullable<(typeof parsedResults)[number]>[]) {
+    for (const [variable, value] of Object.entries(p.verdicts)) {
+      if (verdicts[variable] !== undefined && verdicts[variable] !== value) {
+        return { parsed: null, lines }; // cross-step contradiction
+      }
+      verdicts[variable] = value;
+    }
+    if (p.severity !== undefined) {
+      if (severity !== undefined && severity !== p.severity) {
+        return { parsed: null, lines };
+      }
+      severity = p.severity;
+    }
+  }
+  if (Object.keys(verdicts).length === 0) return { parsed: null, lines };
+  if (verdicts["security-review"] === "rejected" && !severity) return { parsed: null, lines };
+  return { parsed: { verdicts, severity }, lines };
+}
+
+// --- Dual-channel artifact cross-check --------------------------------------
+
+/** Artifact tail window for STATUS-line confirmation (plan E2). */
+export const ARTIFACT_TAIL_BYTES = 64 * 1024;
+
+function readTail(filePath: string): string | null {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return null;
+    const length = Math.min(stat.size, ARTIFACT_TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      fs.readSync(fd, buffer, 0, length, stat.size - length);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return buffer.toString("utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the on-disk artifacts expected to carry each verdict variable,
+ * relative to cwd. Gate artifacts are SPRINT-STAMPED (BUG-2 fix): a stale
+ * report from a prior sprint can no longer satisfy this sprint's disk channel.
+ * QA status rides the sprint-numbered artifact; architect review rides the
+ * NEWEST sprint-stamped software-architect-artifact.
+ */
+export function artifactForVariable(variable: string, cwd: string, sprintNumber?: number): string[] {
+  switch (variable) {
+    case "status":
+      return sprintNumber !== undefined ? [path.join(cwd, `qa-artifact_${pad2(sprintNumber)}.md`)] : [];
+    case "code-review":
+      return [path.join(cwd, "devsecops", `code-review-artifact${sprintStamp(sprintNumber)}.md`)];
+    case "security-review":
+      return [path.join(cwd, "devsecops", `security-review-artifact${sprintStamp(sprintNumber)}.md`)];
+    case "docker-build":
+    case "docker-security":
+      return [path.join(cwd, "devsecops", `docker-build-report${sprintStamp(sprintNumber)}.md`)];
+    case "software-architect-review": {
+      try {
+        const files = fs
+          .readdirSync(cwd)
+          .filter((f) =>
+            sprintNumber !== undefined
+              ? new RegExp(`^software-architect-artifact_${pad2(sprintNumber)}_(\\d+)\\.md$`).test(f)
+              : /^software-architect-artifact_\d+\.md$/.test(f),
+          )
+          .sort((a, b) => {
+            // numeric tail sort: _03_10 is newer than _03_2
+            const na = Number(/_(\d+)\.md$/.exec(a)?.[1] ?? 0);
+            const nb = Number(/_(\d+)\.md$/.exec(b)?.[1] ?? 0);
+            return na - nb;
+          });
+        return files.length > 0 ? [path.join(cwd, files[files.length - 1])] : [];
+      } catch {
+        return [];
+      }
+    }
+    default:
+      return [];
+  }
+}
+
+function sprintStamp(sprintNumber?: number): string {
+  return sprintNumber !== undefined ? `_${pad2(sprintNumber)}` : "";
+}
+
+/**
+ * Verify EVERY parsed verdict against its on-disk artifact (guard 3): the
+ * artifact must exist AND contain the same `variable == value` verdict on its
+ * OWN line within the ≤64KB tail (BUG-3 fix: line-anchored match — template
+ * prose like `code-review == approved|rejected` can no longer confirm a
+ * verdict). Any disagreement/absence ⇒ false (fail-closed).
+ */
+export function verifyArtifactVerdicts(parsed: ParsedVerdict, cwd: string, sprintNumber?: number): boolean {
+  for (const [variable, value] of Object.entries(parsed.verdicts)) {
+    const escaped = `${variable}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const needle = new RegExp(`^\\s*(?:#+\\s*)?${escaped}\\s*==\\s*${value}\\s*$`, "im");
+    const candidates = artifactForVariable(variable, cwd, sprintNumber);
+    const confirmed = candidates.some((artifactPath) => {
+      const tail = readTail(artifactPath)?.toLowerCase();
+      return tail ? needle.test(tail) : false;
+    });
+    if (!confirmed) return false;
+  }
+  return true;
+}
+
+// --- Feedback extraction (loop engine fuel) ---------------------------------
+
+const FEEDBACK_CAP = 2000;
+
+function section(content: string, headingRe: RegExp): string | null {
+  const match = headingRe.exec(content);
+  if (!match) return null;
+  const rest = content.slice(match.index + match[0].length);
+  const end = rest.search(/^##\s/m);
+  const body = (end >= 0 ? rest.slice(0, end) : rest).trim();
+  return body.length > 0 ? body : null;
+}
+
+/**
+ * Extract retry feedback from a review/QA artifact:
+ *  - RED → failure-report sections (repro steps + evidence),
+ *  - ORANGE → Testability Blockers (missing selectors),
+ *  - reviews → finding/problem list lines.
+ * Capped at FEEDBACK_CAP chars; empty when nothing structured is present.
+ */
+export function extractBlockers(artifactContent: string, kind: "qa-red" | "qa-orange" | "review"): string {
+  if (!artifactContent) return "";
+  const parts: string[] = [];
+
+  if (kind === "qa-orange") {
+    const blockers = section(artifactContent, /###?\s*.*Testability Blockers.*$/im);
+    if (blockers) parts.push(blockers);
+  } else if (kind === "qa-red") {
+    const failures = section(artifactContent, /###?\s*.*(Failure|Bug).*$/gim);
+    if (failures) parts.push(failures);
+    const rationale = section(artifactContent, /###?\s*Final Status Rationale\s*$/im);
+    if (rationale) parts.push(rationale);
+  } else {
+    // Review rejects: take bullet/finding lines mentioning problems.
+    const findings = artifactContent.split("\n").filter((l) => {
+      const t = l.trim();
+      if (!/^[-*]\s/.test(t) && !/^#{2,3}\s/.test(t)) return false;
+      return /(critical|warning|risk|issue|finding|vulnerab|inconsisten|violat|missing|must fix)/i.test(t);
+    });
+    if (findings.length > 0) parts.push(findings.join("\n"));
+  }
+
+  const joined = parts.join("\n\n");
+  return joined.length > FEEDBACK_CAP ? `${joined.slice(0, FEEDBACK_CAP)}…(truncated)` : joined;
+}
+
+/**
+ * Build the RETRY CONTEXT feedback payload for a loop-back: reads the source
+ * phase's artifact(s) from disk and extracts its blockers. Best-effort by
+ * design — an unreadable artifact degrades to an empty payload, never throws.
+ */
+export function buildRetryFeedback(
+  parsed: ParsedVerdict,
+  sourcePhaseId: string,
+  cwd: string,
+  sprintNumber?: number,
+): string {
+  if (sourcePhaseId === "qa-verdict") {
+    const value = parsed.verdicts["status"] ?? "";
+    const kind = value === "orange" ? "qa-orange" : "qa-red";
+    const artifactPath = artifactForVariable("status", cwd, sprintNumber)[0];
+    const content = artifactPath ? (readTail(artifactPath) ?? "") : "";
+    return extractBlockers(content, kind);
+  }
+  // Review phases: concatenate whatever review artifacts exist.
+  const parts: string[] = [];
+  for (const variable of ["code-review", "security-review", "software-architect-review"]) {
+    for (const p of artifactForVariable(variable, cwd)) {
+      const content = readTail(p);
+      if (content) {
+        const blockers = extractBlockers(content, "review");
+        if (blockers) parts.push(`From ${path.basename(p)}:\n${blockers}`);
+      }
+    }
+  }
+  return parts.join("\n\n").slice(0, FEEDBACK_CAP);
+}

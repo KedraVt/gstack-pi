@@ -1,11 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { WorkflowState, WorkflowContext, GitContext } from "./types.ts";
 import { getWorkflow } from "./workflows.ts";
-import { saveState, advancePhase, gateForApproval } from "./state.ts";
+import { saveState, advancePhase, gateForApproval, gateOptionalPhase, parkForUnreadableVerdict, loadActiveState, type AdvanceOptions } from "./state.ts";
 import { buildPhaseInstructions, buildDeterministicPlan } from "./templates.ts";
 import { detectGitContext } from "./git.ts";
 import { runSubagent, type SpawnRequest, type SpawnResult, defaultTimeoutMs } from "./spawn.ts";
-import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens, delegationBudgetMs } from "./config.ts";
+import { parseHandoffVerdicts, verifyArtifactVerdicts, mergeParseOutcomes } from "./verdicts.ts";
+import { computeNextSprintNumber } from "./sprint.ts";
+import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens, delegationBudgetMs, modelTierFor, verdictsEnabled } from "./config.ts";
 import { ensureRun, recordDelegatedStep, writeRunReport, recordLiveness, recordTokens, totalTokensUsed } from "./telemetry.ts";
 import { extractHandoff } from "./handoff.ts";
 import { isRefutedStrategy } from "./skip.ts";
@@ -126,28 +128,101 @@ export function annotateOrphanedDelegation(pi: ExtensionAPI, ctx: ExtensionConte
  * uncaught rejections: stale-context failures are dropped silently, anything
  * else is reported best-effort (the report itself is guarded against a stale
  * context).
+ *
+ * Duplicate-chain guard (2026-08-31 session post-mortem): the user refused the
+ * investigate `regression-qa` phase in the confirm dialog — "Skipped by user"
+ * was recorded and the workflow completed — yet a SECOND chain for the same
+ * phase (relaunched via /gstack → Resume while the first dialog was still
+ * pending) ran the QA worker 15 seconds later. Each relaunch spawned a new
+ * dialog that disposed the previous one (auto-resolving it to "No"), so the
+ * refusal only ever governed one of N racing chains, and the last standing
+ * dialog took the Enter-default "Yes". A phase therefore must never have two
+ * concurrent chains: the in-flight registry refuses any relaunch while one is
+ * still running in this process.
  */
+const inFlightPhases = new Set<string>();
+
+/** Test hook: observe whether a phase currently has a running chain. */
+export function isPhaseInFlight(workflowId: string, phaseIndex: number): boolean {
+  return inFlightPhases.has(`${workflowId}:${phaseIndex}`);
+}
+
+/**
+ * Abort support: drop the in-flight marker so a restarted workflow of the same
+ * id can launch its phases immediately instead of being refused by the
+ * duplicate-chain guard until the aborted run's orphaned chain settles.
+ */
+export function releasePhaseInFlight(workflowId: string, phaseIndex: number): void {
+  inFlightPhases.delete(`${workflowId}:${phaseIndex}`);
+}
+
+/**
+ * Advance-block guard (audit fix, same class as the 2026-08-31 post-mortem).
+ * Two mechanical blocks, both "the state machine decides, not the model":
+ *
+ * 1. Manual gate (awaiting_approval): after a decision phase completes, ONLY
+ *    /gstack next or the /gstack panel may continue. Without this check a
+ *    second gstack_advance in the same turn would record the NEXT phase —
+ *    which never ran — as completed, silently bypassing the gate (the parked
+ *    state points at a subagent phase with no chain in flight, so the
+ *    delegation guard alone cannot catch it).
+ *
+ * 2. In-flight delegation: a gstack_advance while the deterministic
+ *    delegation for the CURRENT phase is still running would record the phase
+ *    completed before its work exists; when the real chain then delivers its
+ *    results, the follow-up advance silently skips the NEXT phase (e.g. a
+ *    user typing mid-delegation — the input router tells the model to
+ *    "continue the current phase", inviting exactly this).
+ */
+export function advanceBlockReason(state: WorkflowState): string | null {
+  if (state.status === "awaiting_approval") {
+    return `the workflow is PARKED awaiting user approval (manual decision gate) — only /gstack next or the /gstack panel may continue it`;
+  }
+  if (isPhaseInFlight(state.workflowId, state.phaseIndex)) {
+    return `the subagent delegation for phase ${state.phaseIndex + 1} of "${state.workflowId}" is still running — wait for its results before calling gstack_advance`;
+  }
+  return null;
+}
+
 export function launchPhase(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   state: WorkflowState,
   run: (pi: ExtensionAPI, ctx: ExtensionContext, state: WorkflowState) => Promise<void> = executeCurrentPhase,
 ): void {
-  void run(pi, ctx, state).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/stale/i.test(msg)) return;
+  const key = `${state.workflowId}:${state.phaseIndex}`;
+  if (inFlightPhases.has(key)) {
     try {
-      ctx.ui.notify(`gstack error: ${msg}`, "error");
+      ctx.ui.notify(
+        `gstack: a chain for workflow "${state.workflowId}" phase ${state.phaseIndex + 1} is already running — ignoring the duplicate launch.`,
+        "warning",
+      );
     } catch {
-      /* context went stale while reporting — nothing left to do */
+      /* stale ctx */
     }
-  });
+    return;
+  }
+  inFlightPhases.add(key);
+  void run(pi, ctx, state)
+    .catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/stale/i.test(msg)) return;
+      try {
+        ctx.ui.notify(`gstack error: ${msg}`, "error");
+      } catch {
+        /* context went stale while reporting — nothing left to do */
+      }
+    })
+    .finally(() => {
+      inFlightPhases.delete(key);
+    });
 }
 
 export async function executeCurrentPhase(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   state: WorkflowState,
+  opts?: { approvedOptional?: boolean },
 ): Promise<void> {
   const startEpoch = runtimeEpoch;
   const alive = (): boolean => runtimeEpoch === startEpoch && ctxAlive(ctx);
@@ -190,6 +265,23 @@ export async function executeCurrentPhase(
   if (!alive()) return;
   const wfCtx: WorkflowContext = { state, git, cwd: ctx.cwd };
 
+  // Sprint numbering hook (plan E5): computed ONCE at P02 entry.
+  // Anomaly ⇒ pause + human decision panel; never guess a number.
+  if (state.workflowId === "sprint" && phase.id === "user-story" && state.sprintNumber === undefined) {
+    const discovery = computeNextSprintNumber(ctx.cwd);
+    if (discovery.anomaly) {
+      const parked = { ...state, status: "paused" as const, pausedReason: `anomaly:${discovery.anomaly}` };
+      saveState(pi, parked);
+      notify(`gstack sprint: sprint numbering anomaly — ${discovery.anomaly}. Resolve manually, then resume via /gstack next.`, "warning");
+      return;
+    }
+    const numbered = { ...state, sprintNumber: discovery.next };
+    saveState(pi, numbered);
+    state = numbered;
+    wfCtx.state = numbered;
+    notify(`gstack sprint: assigned sprint number ${String(discovery.next).padStart(2, "0")}.`, "info");
+  }
+
   if (phase.skipWhen?.(wfCtx)) {
     const skipped = advancePhase(state, phase.id, { status: "skipped", summary: "Auto-skipped by condition" }, workflow.phases.length);
     saveState(pi, skipped);
@@ -197,40 +289,38 @@ export async function executeCurrentPhase(
   }
 
   if (phase.optional) {
-    // STEP 2g: optional phases must never be abandoned silently. In
-    // fire-and-forget background runs a stale-context prompt failure now
-    // records `skipped` in state; GSTACK_PI_OPTIONAL_PHASES=auto|skip avoids
-    // the prompt entirely for background execution.
     const mode = optionalPhases();
-    let run: boolean;
-    if (mode === "auto") {
-      run = true;
-    } else if (mode === "skip") {
-      run = false;
-    } else {
-      try {
-        run = await ctx.ui.confirm(
-          `Optional phase: ${phase.name}`,
-          `Run the "${phase.name}" phase? (Skip to continue without it)`,
-        );
-      } catch {
-        const skipped = advancePhase(
-          state,
-          phase.id,
-          { status: "skipped", summary: "Auto-skipped: approval prompt unavailable (stale context)" },
-          workflow.phases.length,
-        );
-        saveState(pi, skipped);
-        notify(`gstack: optional phase "${phase.name}" recorded as skipped (prompt unavailable).`, "warning");
-        return executeCurrentPhase(pi, ctx, skipped);
-      }
+    if (mode === "ask" && !opts?.approvedOptional) {
+      // STEP 2g v2 — optional-phase decision gate. The previous flow prompted
+      // `ctx.ui.confirm` HERE, inside this fire-and-forget background chain:
+      // the dialog appeared mid-stream (the model keeps generating after
+      // gstack_advance returned), stole editor focus, and defaulted to "Yes"
+      // on Enter — a user typing "no, skip QA" + Enter literally launched the
+      // QA phase they were refusing. A prompt from a background chain is not
+      // a decision point. Park instead: the foreground /gstack panel owns the
+      // Run/Skip/Abort decision (command.ts), like every other manual gate.
+      const gated = gateOptionalPhase(state);
+      saveState(pi, gated);
+      notify(
+        `gstack: optional phase "${phase.name}" (${state.phaseIndex + 1}/${workflow.phases.length}) awaits your decision — run /gstack to Run it, Skip it, or Abort.`,
+        "info",
+      );
+      return;
     }
-    if (!alive()) return;
-    if (!run) {
-      const skipped = advancePhase(state, phase.id, { status: "skipped", summary: "Skipped by user" }, workflow.phases.length);
+    if (mode === "skip" && !opts?.approvedOptional) {
+      // Promptless background behavior (fire-and-forget runs, stale contexts):
+      // record the skip explicitly rather than abandoning the chain silently.
+      const skipped = advancePhase(
+        state,
+        phase.id,
+        { status: "skipped", summary: "Auto-skipped: GSTACK_PI_OPTIONAL_PHASES=skip" },
+        workflow.phases.length,
+      );
       saveState(pi, skipped);
       return executeCurrentPhase(pi, ctx, skipped);
     }
+    // mode === "auto", or the user explicitly approved this phase via the
+    // /gstack decision panel (approvedOptional) — fall through and run it.
   }
 
   try {
@@ -246,6 +336,49 @@ export async function executeCurrentPhase(
   if (deterministicSubagents() && phase.execution === "subagent") {
     const results = await runDeterministicDelegation(phase, wfCtx, ctx, alive, pi);
     if (!alive()) return;
+
+    // Abort-resurrect guard (audit fix, same class as the 2026-08-31
+    // post-mortem): the user may have aborted the workflow while this chain
+    // was delegating. Persisting anything now (sprint verdict stash, skill
+    // tracking) would append a FRESH ACTIVE state entry after the aborted one
+    // and silently resurrect the workflow. No persisted workflow ⇒ the run is
+    // over — drop the results instead of writing them.
+    if (!loadActiveState(ctx)) {
+      return;
+    }
+
+    // Sprint verdict parsing at DELEGATION time (plan B4 / D1): the raw
+    // subagent outputs are the source of truth — never the main model's
+    // paraphrase. Each CHAIN STEP parses independently (review W1: joining
+    // outputs first would drop every non-final HANDOFF once the total passed
+    // extractHandoff's whole-output threshold), then outcomes merge with
+    // contradiction ⇒ null. Dual-channel check against on-disk artifacts;
+    // any disagreement ⇒ parsed=null ⇒ D4 park (no attempt burned).
+    if (state.workflowId === "sprint" && phase.loopBackTo && verdictsEnabled()) {
+      const outcome = mergeParseOutcomes(
+        results.map((r) => parseHandoffVerdicts(r.result.output ?? "")),
+      );
+      let parsed = outcome.parsed;
+      if (parsed && !verifyArtifactVerdicts(parsed, ctx.cwd, state.sprintNumber)) {
+        parsed = null; // HANDOFF says X, artifact disagrees ⇒ fail closed
+      }
+      if (!parsed) {
+        const parkedState = parkForUnreadableVerdict(
+          { ...state, pendingVerdict: { phaseId: phase.id, parsed: null, excerpt: outcome.lines.join("\n") } },
+          phase.id,
+        );
+        saveState(pi, parkedState);
+        notify(
+          `gstack sprint: no trustworthy verdict found for "${phase.id}" — pipeline parked for manual review (/gstack next). No retry budget consumed.`,
+          "warning",
+        );
+        return;
+      }
+      const withVerdict = { ...state, pendingVerdict: { phaseId: phase.id, parsed, excerpt: outcome.lines.join("\n") } };
+      saveState(pi, withVerdict);
+      state = withVerdict;
+    }
+
     // STEP 0 telemetry: persist per-step measurements (persistence only —
     // every number already exists on SpawnResult).
     for (const [stepIndex, { agent, result }] of results.entries()) {
@@ -381,6 +514,8 @@ async function runDeterministicDelegation(
         cwd: wfCtx.cwd,
         // STEP 5a: per-class timeout resolved from the phase id.
         phaseId: phase.id,
+        // E4/D10 model tiers: inert unless GSTACK_PI_MODEL_FAST/_STRONG are set.
+        modelOverride: modelTierFor(phase.id),
         shouldAbort: () => !alive(),
         onActivity: setStatus,
         // STEP 5b: observe-only liveness — dual sink (notify + run report).
@@ -540,6 +675,15 @@ export function buildResumeContext(state: WorkflowState): string {
   const completed = Object.entries(state.results).filter(([, r]) => r.status === "completed");
   if (completed.length > 0) {
     parts.push(`Completed: ${completed.map(([id]) => id).join(", ")}`);
+  }
+
+  if (state.pendingOptional) {
+    // Optional-phase decision gate: parked AT the optional phase. The model
+    // must not start it — the user decides via /gstack (Run / Skip / Abort).
+    parts.push(
+      `This phase is OPTIONAL and the workflow is PARKED awaiting the user's decision. Do not work on it and do not call gstack_advance — tell the user to run /gstack to Run it, Skip it, or Abort.`,
+    );
+    return parts.join("\n");
   }
 
   parts.push("Continue working on the current phase. Call gstack_advance when done.");

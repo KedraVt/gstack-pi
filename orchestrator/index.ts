@@ -3,9 +3,10 @@ import { Type } from "typebox";
 import { handleGstackCommand, getCompletions } from "./command.ts";
 import { createInputRouter } from "./router.ts";
 import { loadActiveState, saveState, advancePhase, gateForApproval, createState } from "./state.ts";
+import type { AdvanceOptions } from "./state.ts";
 import { getWorkflow, getWorkflowIds } from "./workflows.ts";
-import { launchPhase, invalidateRuntime } from "./executor.ts";
-import { manualGates, autoGateValidated } from "./config.ts";
+import { launchPhase, invalidateRuntime, advanceBlockReason } from "./executor.ts";
+import { manualGates, autoGateValidated, optionalPhases } from "./config.ts";
 import { isValidatedStrategy } from "./skip.ts";
 import { ensureRun, writeRunReport } from "./telemetry.ts";
 import { SECURITY_SECTION } from "../lib/content-security.ts";
@@ -72,13 +73,67 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       }
 
       const phase = workflow.phases[state.phaseIndex];
+
+      // Optional-phase decision gate (STEP 2g v2): while the workflow is parked
+      // at an optional phase awaiting the user's Run/Skip/Abort decision, the
+      // model can neither complete nor skip the phase via gstack_advance — the
+      // decision belongs exclusively to the /gstack panel.
+      if (state.pendingOptional) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `The workflow is parked at the optional phase "${phase?.name ?? "?"}" awaiting an explicit user decision (Run / Skip / Abort) via /gstack. Do NOT call gstack_advance again and do not start the phase — the user decides.`,
+          }],
+        };
+      }
+
+      // Advance-block guard (audit fix): the state machine, not the model,
+      // decides when a phase may be recorded. Two cases are refused: a parked
+      // manual gate (only /gstack next continues it) and an in-flight
+      // delegation (its results, not a model summary, complete the phase).
+      const blocked = advanceBlockReason(state);
+      if (blocked) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `gstack: ${blocked}. Do NOT call gstack_advance again.`,
+          }],
+        };
+      }
+
+      // Sprint loop engine (D1–D3): verdict routing needs the phase list and
+      // cwd; the pendingVerdict was stashed at delegation time.
+      const advanceOpts: AdvanceOptions = { phases: workflow.phases, cwd: ctx.cwd };
       const newState = advancePhase(
         state,
         phase.id,
         { status: params.status, summary: params.summary },
         workflow.phases.length,
+        advanceOpts,
       );
       saveState(pi, newState);
+
+      // D3 security freeze surfaced to both model and user.
+      if (newState.frozenUntilHuman) {
+        const info = newState.freezeInfo;
+        return {
+          content: [{
+            type: "text" as const,
+            text: `SECURITY FREEZE: ${info?.severity ?? "critical/high"} severity security rejection in "${phase.id}". The pipeline is FROZEN — no further automated work. A human security panel must review devsecops/security-review-artifact.md; only /gstack next can unfreeze after that review. Do NOT attempt fixes or call gstack_advance again.`,
+          }],
+          isError: false,
+        };
+      }
+
+      if (newState.pausedReason?.startsWith("loop-exhausted:")) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Retry budget exhausted (${newState.pausedReason}). Workflow paused for human decision — review the latest artifacts with the user; /gstack next continues past this gate manually.`,
+          }],
+        };
+      }
+
 
       if (newState.status === "completed") {
         ctx.ui.setStatus("gstack", undefined);
@@ -144,10 +199,17 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       // uncaught rejections. See executor.launchPhase.
       launchPhase(pi, ctx, newState);
 
+      // STEP 2g v2: when the next phase is optional in interactive mode, the
+      // executor will park the workflow for the user's Run/Skip/Abort decision
+      // — tell the model so it does not expect the phase to run on its own.
+      const decisionNote =
+        nextPhase?.optional && optionalPhases() === "ask"
+          ? ` This phase is OPTIONAL: the workflow will pause and the user decides via /gstack whether to run "${nextPhase.name}". Do not call gstack_advance for it.`
+          : "";
       return {
         content: [{
           type: "text" as const,
-          text: `Phase "${phase.name}" recorded. Advancing to: ${nextPhase.name} (${newState.phaseIndex + 1}/${workflow.phases.length}).`,
+          text: `Phase "${phase.name}" recorded. Advancing to: ${nextPhase.name} (${newState.phaseIndex + 1}/${workflow.phases.length}).${decisionNote}`,
         }],
       };
     },
@@ -160,10 +222,10 @@ export function initOrchestrator(pi: ExtensionAPI): void {
     name: "gstack_start",
     label: "Start Workflow",
     description:
-      "Start a gstack guided workflow programmatically. Workflows: develop | investigate | qa | qa-report | ship | review | quick. Use when a task matches one of these pipelines and no workflow is currently active.",
-    promptSnippet: "Start a gstack workflow (develop, investigate, qa, qa-report, ship, review, quick)",
+      "Start a gstack guided workflow programmatically. Workflows: develop | investigate | qa | qa-report | ship | review | quick | sprint. Use when a task matches one of these pipelines and no workflow is currently active.",
+    promptSnippet: "Start a gstack workflow (develop, investigate, qa, qa-report, ship, review, quick, sprint)",
     parameters: Type.Object({
-      workflow: Type.String({ description: "Workflow id: develop | investigate | qa | qa-report | ship | review | quick" }),
+      workflow: Type.String({ description: "Workflow id: develop | investigate | qa | qa-report | ship | review | quick | sprint" }),
       goal: Type.String({ description: "What the workflow should accomplish" }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext): Promise<any> {

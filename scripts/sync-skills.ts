@@ -3,7 +3,7 @@
  *
  * Responsibilities:
  *   1. Check if source skills are stale relative to the generator script (warning).
- *   2. Copy 23 gstack skills from `gstack/.pi/skills/gstack-*` to `gstack-pi/skills/*`.
+ *   2. Copy 23 gstack skills from `gstack/.pi/skills/gstack-*` to `gstack-pi/skills/gstack/*`.
  *   3. Run a 6-step rewrite pipeline on each SKILL.md to map paths to $GSTACK_ROOT.
  *   4. Verify zero remaining `$GSTACK_BIN/` calls in output files (post-check).
  *   5. Clean non-pi frontmatter keys, keeping only name and description.
@@ -42,7 +42,8 @@ function main() {
   const repoSkillsDir = join(gstackRoot, ".pi", "skills");
   const localSkillsDir = join(gstackPiRoot, "skills");
   const srcSkillsDir = existsSync(repoSkillsDir) ? repoSkillsDir : localSkillsDir;
-  const dstSkillsDir = localSkillsDir;
+  // gstack skills land nested under skills/gstack/ (kedra/gstack split)
+  const dstSkillsDir = join(localSkillsDir, "gstack");
 
   if (!existsSync(srcSkillsDir)) {
     console.error(`Error: No skills found. Tried:\n  ${repoSkillsDir}\n  ${localSkillsDir}\nRun \`bun run gen:skill-docs\` in source/ first.`);

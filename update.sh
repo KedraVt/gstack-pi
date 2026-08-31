@@ -154,7 +154,7 @@ STALE=""
 for skill in "${SKILLS[@]}"; do
   digest="$DEST/skills-distilled/$skill.md"
   [ -f "$digest" ] || continue
-  upstream="$DEST/skills/$skill/SKILL.md"
+  upstream="$DEST/skills/gstack/$skill/SKILL.md"
   [ -f "$upstream" ] || continue
   if [ "$upstream" -nt "$digest" ]; then
     STALE="$STALE\n  $skill (upstream SKILL.md changed after distillation)"
