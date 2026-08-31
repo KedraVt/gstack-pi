@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createState, advancePhase, routeVerdict, parkForUnreadableVerdict, forceApproveParked, returnParkedWithContext, isSecurityFrozen, unfreeze, forceContinuePastGate } from "../orchestrator/state.ts";
+import { createState, advancePhase, routeVerdict, parkForUnreadableVerdict, forceApproveParked, returnParkedWithContext, isSecurityFrozen, unfreeze, forceContinuePastGate, reissueGate } from "../orchestrator/state.ts";
 import { getAllWorkflows, getWorkflow } from "../orchestrator/workflows.ts";
 import { parseHandoffVerdicts, verifyArtifactVerdicts, extractBlockers, buildRetryFeedback, mergeParseOutcomes, KNOWN_VARIABLES } from "../orchestrator/verdicts.ts";
 import { computeNextSprintNumber, pad2, sprintArchiveDir, archivedSprintDirs } from "../orchestrator/sprint.ts";
@@ -739,13 +739,39 @@ describe("sprint instruction assembly", () => {
 
   test("verdict dual-channel duty is instructed in gate tasks", () => {
     const qaPlan = buildDeterministicPlan(findPhaseSafe("qa-verdict"), sprintCtx(8));
-    assert.match(qaPlan[0].task, /status == green\|red\|orange/);
+    assert.match(qaPlan[0].task, /status == green/);
+    assert.match(qaPlan[0].task, /status == red/);
+    assert.match(qaPlan[0].task, /status == orange/);
     assert.match(qaPlan[0].task.toLowerCase(), /handoff/);
     const archPlan = buildDeterministicPlan(findPhaseSafe("architect-gate"), sprintCtx(4));
-    assert.match(archPlan[0].task, /software-architect-review == approved\|rejected/);
+    assert.match(archPlan[0].task, /software-architect-review == approved/);
+    assert.match(archPlan[0].task, /software-architect-review == rejected/);
     const revChain = buildDeterministicPlan(findPhaseSafe("devsecops-review"), sprintCtx(7));
-    assert.match(revChain[0].task, /code-review == approved\|rejected/);
-    assert.match(revChain[1].task, /security-review == approved\|rejected/);
+    assert.match(revChain[0].task, /code-review == approved/);
+    assert.match(revChain[0].task, /code-review == rejected/);
+    assert.match(revChain[1].task, /security-review == approved/);
+    assert.match(revChain[1].task, /security-review == rejected/);
+  });
+
+  test("B8: no copiable placeholder verdict line remains in any gate task", () => {
+    // A literal-minded agent copying the instruction verbatim would write a
+    // value that fails the closed whitelist and park the whole gate. Every
+    // instructed verdict line must be a concrete whitelist value.
+    const cases: Array<[string, number]> = [
+      ["architect-gate", 4],
+      ["devsecops-review", 7],
+      ["qa-verdict", 8],
+    ];
+    for (const [phaseId, phaseIndex] of cases) {
+      const plan = buildDeterministicPlan(findPhaseSafe(phaseId), sprintCtx(phaseIndex));
+      for (const step of plan) {
+        assert.doesNotMatch(
+          step.task,
+          /==\s*(approved\|rejected|green\|red\|orange|success\|failed|critical\|high\|medium\|low)/,
+          `${phaseId} task still contains a copiable placeholder verdict line`,
+        );
+      }
+    }
   });
 
   test("timeout classes cover all sprint phases 1:1", () => {
@@ -923,5 +949,34 @@ describe("code-review pass-1 fixes", () => {
       if (saved === undefined) delete process.env.GSTACK_PI_VERDICTS;
       else process.env.GSTACK_PI_VERDICTS = saved;
     }
+  });
+
+  test("B9: reissueGate restores exactly one verified loop-target run after exhaustion", () => {
+    const ceiling = sprintMaxAttempts(); // 4 by default
+    const exhausted = sprintState(7, {
+      status: "paused" as const,
+      pausedReason: `loop-exhausted:implement after ${ceiling} runs`,
+      attempts: { implement: ceiling },
+    });
+
+    const reissued = reissueGate(exhausted, SPRINT.phases);
+    assert.equal(reissued.status, "active");
+    assert.equal(reissued.pausedReason, undefined);
+    assert.equal(reissued.attempts!.implement, Math.max(0, ceiling - 2));
+    // Non-exhaustion pauses pass through as a plain resume.
+    assert.equal(reissueGate({ ...exhausted, pausedReason: "anomaly:dup" }, SPRINT.phases).status, "active");
+
+    // The gate re-runs and REJECTS again: it must loop back to implement
+    // (not re-park) — the human re-issue granted one verified target run.
+    const rejectedVerdict = { phaseId: "devsecops-review", parsed: { verdicts: { "code-review": "rejected" } }, excerpt: "" };
+    const after = advancePhase({ ...reissued, pendingVerdict: rejectedVerdict }, "devsecops-review", { status: "completed", summary: "gate re-ran, rejected" }, SPRINT.phases.length, { phases: SPRINT.phases });
+    assert.equal(after.phaseIndex, SPRINT.phases.findIndex((p) => p.id === "implement"));
+    assert.equal(after.status, "active");
+    assert.equal(after.attempts!.implement, ceiling - 1);
+
+    // A SECOND consecutive rejection re-exhausts and returns to the human.
+    const after2 = advancePhase({ ...after, phaseIndex: 7, pendingVerdict: rejectedVerdict }, "devsecops-review", { status: "completed", summary: "gate re-ran, rejected again" }, SPRINT.phases.length, { phases: SPRINT.phases });
+    assert.equal(after2.status, "paused");
+    assert.match(after2.pausedReason ?? "", /loop-exhausted:implement/);
   });
 });

@@ -492,13 +492,16 @@ Audit the changes produced by the implement chain. Glossary violations are block
 
 {glossary}
 
-Write devsecops/code-review-artifact_{sprint}.md containing the line 'code-review == approved|rejected'. Repeat the exact line in your ## HANDOFF — the orchestrator cross-checks both channels before routing.`,
+Write devsecops/code-review-artifact_{sprint}.md ending with EXACTLY ONE of these two lines (your real verdict, nothing else on the line):
+- 'code-review == approved'
+- 'code-review == rejected'
+Repeat the SAME line verbatim in your ## HANDOFF — the orchestrator cross-checks both channels before routing.`,
         },
         {
           agent: "devsecops-reviewer",
           skills: ["gstack-sprint-appsec", "gstack-sprint-docker", "gstack-sprint-pipeline"],
           task: `## DELIVERABLE
-Security (+ conditional Docker/CI) audit of the sprint diff: STRIDE-lite pass over new boundaries, actionable remediations, artifacts under devsecops/ ending with parseable verdict lines ('security-review == approved|rejected', 'severity == critical|high|medium|low' when rejecting).
+Security (+ conditional Docker/CI) audit of the sprint diff: STRIDE-lite pass over new boundaries, actionable remediations, artifacts under devsecops/ ending with parseable verdict lines — 'security-review == approved' or 'security-review == rejected', plus a 'severity ==' line (critical, high, medium or low) when rejecting.
 
 ## STOP CONDITION
 Stop when: security-review-artifact_{sprint}.md exists with its verdict lines and every finding carries a copy-paste-ready fix.
@@ -507,7 +510,7 @@ Stop when: security-review-artifact_{sprint}.md exists with its verdict lines an
 Sprint {sprint} | Goal: {goal} | Branch: {branch}
 The code auditor ran before you ({previous}). Severity discipline: escalate-on-doubt — critical/high freeze the pipeline for human review; medium/low loop back automatically.
 
-Write devsecops/security-review-artifact_{sprint}.md (+ docker-build-report_{sprint}.md ONLY if the repo ships Dockerfiles/compose). Repeat the exact verdict lines in your ## HANDOFF — the orchestrator cross-checks both channels.`,
+Write devsecops/security-review-artifact_{sprint}.md (+ docker-build-report_{sprint}.md ONLY if the repo ships Dockerfiles/compose). Repeat the SAME verdict lines verbatim in your ## HANDOFF — the orchestrator cross-checks both channels.`,
         },
       ],
       optional: false,

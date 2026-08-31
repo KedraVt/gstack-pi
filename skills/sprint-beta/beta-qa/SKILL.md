@@ -100,14 +100,16 @@ not on code bugs.
 ## Output: the qa-artifact protocol
 
 Write `qa-artifact_XX.md` in the project root: test execution report ending
-with `## STATUS == GREEN|RED|ORANGE` plus failure reports for RED or
-Testability Blockers for ORANGE. **Write the exact line `status == green|red|orange`
+with `## STATUS == GREEN`, `## STATUS == RED` or `## STATUS == ORANGE` (exactly
+one — your real verdict) plus failure reports for RED or
+Testability Blockers for ORANGE. **Write the exact line `status == green`,
+`status == red` or `status == orange` (exactly one)
 AND repeat it inside your `## HANDOFF`** — the orchestrator cross-checks both
 channels before routing. RED/ORANGE loops back to implement automatically.
 
 ```markdown
 ## QA Report
-status == green | red | orange
+status == green        ← or `status == red` / `status == orange`; exactly one, verbatim
 Sprint: XX | Branch: <branch>
 Flows covered: <list> — COVERAGE: <tested flows>
 Bugs: N critical, N high, N medium, N low

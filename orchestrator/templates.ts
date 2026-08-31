@@ -669,9 +669,12 @@ Stop when: the artifact exists with its parseable verdict line and every finding
 Sprint {sprint} | Goal: {goal} | Branch: {branch}
 Audit system-design_XX.md + ADR-log_XX.md against the capability. Rejections loop back to the design phase automatically — be precise about WHAT fails and WHY.
 
-Write the artifact with the exact line 'software-architect-review == approved|rejected' AND repeat that exact line inside your ## HANDOFF — the orchestrator cross-checks both channels before routing.`,
+End the artifact with EXACTLY ONE of these two lines (your real verdict, nothing else on the line):
+- 'software-architect-review == approved'
+- 'software-architect-review == rejected'
+Repeat the SAME line verbatim inside your ## HANDOFF — the orchestrator cross-checks both channels before routing.`,
     "qa-verdict": `## DELIVERABLE
-qa-artifact_XX.md in the project root: test execution report ending with '## STATUS == GREEN|RED|ORANGE' plus failure reports for RED (repro steps) or Testability Blockers for ORANGE (missing selectors/ids).
+qa-artifact_XX.md in the project root: test execution report ending with '## STATUS == GREEN', '## STATUS == RED' or '## STATUS == ORANGE' (exactly one) plus failure reports for RED (repro steps) or Testability Blockers for ORANGE (missing selectors/ids).
 
 ## STOP CONDITION
 Stop when: the artifact exists with its STATUS line and every non-GREEN finding is reproducible from the report alone.
@@ -680,7 +683,11 @@ Stop when: the artifact exists with its STATUS line and every non-GREEN finding 
 Sprint {sprint} | Goal: {goal} | Branch: {branch}
 Execute the acceptance criteria of user-story_XX.md against the implemented branch using browser tools. RED/ORANGE loops back to implement automatically.
 
-Write qa-artifact_XX.md with the exact line 'status == green|red|orange' AND repeat it inside your ## HANDOFF — the orchestrator cross-checks both channels before routing.`,
+Write qa-artifact_XX.md ending with EXACTLY ONE of these three lines (your real verdict, nothing else on the line):
+- 'status == green'
+- 'status == red'
+- 'status == orange'
+Repeat the SAME line verbatim inside your ## HANDOFF — the orchestrator cross-checks both channels before routing.`,
     "commit-archive": `## DELIVERABLE
 Sprint closed: all work committed via Conventional Commits, artifacts archived to .gstack/sprints/sprint_XX/, archive manifest written.
 

@@ -6,6 +6,24 @@ The vendored gstack source keeps its own `source/TODOS.md`; this file tracks ext
 
 ## INTEGRATION FOLLOW-UPS (feat/sprint-workflow)
 
+### Code-review pass-1 deferred items (2026-08-31)
+
+- **Git LFS for `runtime/browse/dist/*`** — the ~98MB browse daemon binary is committed
+  (and re-committed on every rebuild), bloating history. Move to Git LFS or a
+  build-on-demand script; do NOT keep re-committing the binary.
+- **D4 park cause distinction** — `parkForUnreadableVerdict` merges "no verdict lines
+  found" and "parsed verdict failed disk verification" into one panel. Surface the two
+  causes distinctly for triage (agent misbehaved vs artifact disagreement).
+- **Centralize artifact filenames** — sprint-stamped artifact paths are duplicated across
+  `verdicts.ts`, `templates.ts` task strings and the `state.ts` freeze path. One
+  `artifactPaths(sprintNumber)` module would prevent the stamping drift class (the B3 bug).
+- **Executor integration tests** — the pass-1 findings (B1/B2/B3) were all wiring bugs
+  invisible to the pure-function suite; a fake-spawn harness exercising
+  `runDeterministicDelegation` end-to-end would catch this class.
+- **`handoff.ts` cutAtParagraph** — documented as a *tail* fallback ("last 12000 chars")
+  but `slice(0, limit)` implements a *head* cut. Harmless for verdict parsing (fail-closed
+  either way) but the comment and code disagree — align or implement a true tail cut.
+
 ### Non-distilled .agents-clean skills — fold into existing gstack skills (D12)
 
 > **Update 2026-08-27:** the FULL raw sources of the .agents-clean skills now ship verbatim in

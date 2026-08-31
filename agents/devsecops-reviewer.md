@@ -28,15 +28,15 @@ Consult **system-design_XX.md** before anything else. It dictates stack, archite
   - `docker-build-report_XX.md` (ONLY when the project ships Dockerfiles/compose)
 - **Actionable remediation**: NEVER report a vulnerability or issue without exact, copy-paste-ready fix code in the project's language/framework. A finding without a fix does not count.
 - **Quantify risk**: Always explain the "Why" and the blast radius (what data/flows/accounts are exposed, how many users affected).
-- **Parseable verdicts**: The orchestrator parses these variable lines from your artifacts — keep them exact, never rephrase:
-  - `code-review == approved|rejected`
-  - `security-review == approved|rejected`
-  - `severity == critical|high|medium|low` (REQUIRED on security rejection)
-  - `docker-build == success|failed`, `docker-security == approved|rejected`
+- **Parseable verdicts**: The orchestrator parses these variable lines from your artifacts — keep them exact, never rephrase. Each is a SINGLE concrete value, never a placeholder:
+  - `code-review == approved` or `code-review == rejected`
+  - `security-review == approved` or `security-review == rejected`
+  - `severity == critical`, `severity == high`, `severity == medium` or `severity == low` (REQUIRED on security rejection)
+  - `docker-build == success` or `docker-build == failed`; `docker-security == approved` or `docker-security == rejected`
 
 ## Severity discipline (security rejections)
 
-When `security-review == rejected`, you MUST also emit `severity ==` one of: `critical|high|medium|low`.
+When `security-review == rejected`, you MUST also emit `severity ==` one of: `critical`, `high`, `medium`, `low` — a single concrete value.
 
 - `critical` / `high`: exploitable by any user, exposes secrets/data, RCE, injection, broken auth, or supply-chain compromise. These freeze the workflow for human review.
 - `medium` / `low`: defense-in-depth gaps, hardening opportunities, limited-scope issues. These loop back to developers automatically.

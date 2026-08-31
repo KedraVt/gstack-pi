@@ -174,7 +174,12 @@ export function advancePhase(state: WorkflowState, phaseId: string, result: Phas
       next.freezeInfo = {
         phaseId: phase.id,
         severity: parsed.severity!,
-        artifactPath: `devsecops/security-review-artifact_${pad2(next.sprintNumber ?? 0)}.md`,
+        // Sprint number may be unknown if the freeze happens off the normal
+        // path — surface the template placeholder instead of a bogus "00".
+        artifactPath:
+          next.sprintNumber !== undefined
+            ? `devsecops/security-review-artifact_${pad2(next.sprintNumber)}.md`
+            : "devsecops/security-review-artifact_XX.md",
       };
       return next; // phaseIndex held at the review phase
     }
@@ -367,4 +372,25 @@ export function abortState(state: WorkflowState): WorkflowState {
 
 export function resumeState(state: WorkflowState): WorkflowState {
   return { ...state, status: "active" };
+}
+
+/**
+ * B9: the human chose "Re-run the gated phase" after loop exhaustion. A bare
+ * resume re-parks immediately on the next rejection — the attempt counter is
+ * already AT the ceiling, so runsDone = ceiling + 1 fails the loop-back check
+ * and the loop target never gets another run. Re-issuing restores exactly ONE
+ * verified run of the loop target: the counter is set to ceiling - 2 so the
+ * next rejection still loop-backs (runsDone = attempts + 1 < ceiling) before
+ * the loop re-exhausts and returns to the human.
+ */
+export function reissueGate(state: WorkflowState, phases: WorkflowPhase[]): WorkflowState {
+  const reason = state.pausedReason ?? "";
+  if (!reason.startsWith("loop-exhausted:")) return resumeState(state);
+  const gatePhase = phases[state.phaseIndex];
+  const attempts = { ...(state.attempts ?? {}) };
+  if (gatePhase?.loopBackTo) {
+    const ceiling = ceilingFor(gatePhase.loopBackTo, gatePhase.maxAttempts);
+    attempts[gatePhase.loopBackTo] = Math.max(0, ceiling - 2);
+  }
+  return { ...state, status: "active", pausedReason: undefined, attempts };
 }

@@ -363,9 +363,15 @@ export async function executeCurrentPhase(
     // tracking) would append a FRESH ACTIVE state entry after the aborted one
     // and silently resurrect the workflow. No persisted workflow ⇒ the run is
     // over — drop the results instead of writing them.
-    if (!loadActiveState(ctx)) {
+    // B7 fix: when a state DOES exist, it may be a newer one (the user aborted
+    // and re-started mid-delegation). Adopt the authoritative entry instead of
+    // continuing to persist the stale pre-delegation snapshot over it.
+    const live = loadActiveState(ctx);
+    if (!live || live.workflowId !== state.workflowId || live.phaseIndex !== state.phaseIndex) {
       return;
     }
+    state = live;
+    wfCtx.state = live;
 
     // Sprint verdict parsing at DELEGATION time (plan B4 / D1): the raw
     // subagent outputs are the source of truth — never the main model's

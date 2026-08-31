@@ -132,15 +132,17 @@ low (hardening suggestion). **Escalate on doubt** — a hedged severity is
 treated as the higher tier by the orchestrator's fail-closed parser.
 
 **Output artifact** (dual channel): write
-`devsecops/security-review-artifact_XX.md` containing the parseable lines
-`security-review == approved|rejected` and, when rejecting,
-`severity == critical|high|medium|low`; repeat the exact lines in your
+`devsecops/security-review-artifact_XX.md` ending with EXACTLY ONE of these two
+lines (your real verdict, nothing else on the line): `security-review == approved`
+or `security-review == rejected`; when rejecting, add EXACTLY ONE severity line —
+`severity == critical`, `severity == high`, `severity == medium` or
+`severity == low`. Repeat the SAME lines verbatim in your
 `## HANDOFF` — the orchestrator cross-checks both channels before routing.
 
 ```markdown
 ## Security Audit Report
-security-review == approved | rejected
-severity == critical | high | medium | low   (only when rejected)
+security-review == approved        ← or `security-review == rejected`; exactly one, verbatim
+severity == high                   ← only when rejected; one of critical/high/medium/low, verbatim
 problems-security: none | <summary for developers>
 
 ### Security Vulnerabilities (problems-security details)

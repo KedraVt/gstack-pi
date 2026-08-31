@@ -74,8 +74,10 @@ export interface VerdictParseOutcome {
 
 /**
  * Parse verdict variable/value pairs from the `## HANDOFF` section of a
- * subagent output (containment starts at the FIRST `## HANDOFF` marker and
- * runs to end-of-text; chain steps are parsed separately then merged — see
+ * subagent output (containment starts at the LAST `## HANDOFF` marker of the
+ * raw output per extractHandoff — for short outputs the whole text is scanned
+ * from its first marker — and runs to end-of-text; chain steps are parsed
+ * separately then merged — see
  * mergeParseOutcomes). Returns `{parsed: null}` when no valid verdict set can be
  * extracted: missing HANDOFF, no known-variable lines, or any known variable
  * carrying an out-of-whitelist (hedged/malformed) value.

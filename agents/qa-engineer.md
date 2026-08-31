@@ -75,7 +75,7 @@ timestamp: "[YYYY-MM-DD HH:MM]"
 ### [IF ORANGE] Testability Blockers
 * **Missing Selectors:** `[interactive elements lacking data-testid]`
 
-## STATUS == GREEN | RED | ORANGE
+## STATUS == GREEN        (or RED / ORANGE — exactly one, verbatim)
 ```
 
 Keep both the `status:` frontmatter field and the trailing `## STATUS ==` line exactly in this format — the orchestrator parses them programmatically. Never rephrase.

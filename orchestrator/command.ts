@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getAllWorkflows, getWorkflow, getWorkflowIds } from "./workflows.ts";
-import { loadActiveState, createState, saveState, abortState, resumeState, approveNext, approveOptionalPhase, skipPendingOptional, isSecurityFrozen, unfreeze, forceApproveParked, returnParkedWithContext, forceContinuePastGate } from "./state.ts";
+import { loadActiveState, createState, saveState, abortState, resumeState, reissueGate, approveNext, approveOptionalPhase, skipPendingOptional, isSecurityFrozen, unfreeze, forceApproveParked, returnParkedWithContext, forceContinuePastGate } from "./state.ts";
 import { detectGitContext } from "./git.ts";
 import { launchPhase, executeCurrentPhase, releasePhaseInFlight } from "./executor.ts";
 import { writeRunReport } from "./telemetry.ts";
@@ -134,7 +134,7 @@ export async function handleGstackCommand(args: string, ctx: ExtensionCommandCon
       const choice = await ctx.ui.select(
         "Workflow awaiting your approval",
         [
-          `Approve & continue: ${activeState.workflowId} → next phase after "${activeState.results && Object.keys(activeState.results).pop()}" ${progress}`,
+          `Approve & continue: ${activeState.workflowId} → next phase after "${workflow?.phases[activeState.phaseIndex - 1]?.name ?? "previous phase"}" ${progress}`,
           "Abort workflow",
         ],
       );
@@ -316,10 +316,17 @@ export async function handleSprintPanel(state: WorkflowState, ctx: ExtensionComm
       ? ["Re-run the gated phase (+1 verified attempt)", "Accept result — continue past the gate", "Abort workflow"]
       : ["Resume (re-checks sprint numbering first)", "Abort workflow"];
     const choice = await ctx.ui.select(`Sprint paused — ${reason}`, choices);
-    if (choice === "Resume (re-checks sprint numbering first)" || choice === "Re-run the gated phase (+1 verified attempt)") {
+    if (choice === "Resume (re-checks sprint numbering first)") {
       const resumed = resumeState(state);
       saveState(pi, resumed);
       launchPhase(pi, ctx, resumed);
+    } else if (choice === "Re-run the gated phase (+1 verified attempt)") {
+      // B9: a bare resume would re-park on the FIRST rejection (the attempt
+      // counter is already at the ceiling). reissueGate restores exactly one
+      // verified run of the loop target before the loop re-exhausts.
+      const reissued = reissueGate(state, phases);
+      saveState(pi, reissued);
+      launchPhase(pi, ctx, reissued);
     } else if (exhausted && choice === "Accept result — continue past the gate") {
       const next = forceContinuePastGate(state);
       saveState(pi, next);

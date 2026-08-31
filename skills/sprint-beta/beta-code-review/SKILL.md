@@ -4,8 +4,8 @@ description: >
   Adversarial pre-merge code review: scope-drift detection, five-dimension
   audit (correctness, readability, architecture, security, performance),
   confidence-calibrated findings with a quote-the-line verification gate, and
-  parseable verdict lines (code-review == approved|rejected) for deterministic
-  routing.
+  parseable verdict lines (code-review == approved, or code-review == rejected)
+  for deterministic routing.
 ---
 
 <!-- provenance: gstack/gstack-review (adversarial review workflow, calibration) + kedra/code-audit-reviewer (5 dimensions, severity protocol) · merged 2026-08-28 -->
@@ -152,13 +152,14 @@ instead of expecting the literal name in the class body.
 **No finding without a concrete failure scenario and a fix.**
 
 **Output artifact** (dual channel — the orchestrator cross-checks both before
-routing): write `devsecops/code-review-artifact_XX.md` containing the parseable
-line `code-review == approved|rejected`, AND repeat that exact line in your
-`## HANDOFF`. Artifact structure:
+routing): write `devsecops/code-review-artifact_XX.md` ending with EXACTLY ONE
+of these two lines (your real verdict, nothing else on the line):
+`code-review == approved` or `code-review == rejected`. Repeat the SAME line
+verbatim in your `## HANDOFF`. Artifact structure:
 
 ```markdown
 ## Code Review Report
-code-review == approved | rejected
+code-review == approved        ← or `code-review == rejected`; exactly one, verbatim
 Scope Check: CLEAN | DRIFT DETECTED | REQUIREMENTS MISSING
 problems-code: none | <summary of critical/high issues for developers>
 
