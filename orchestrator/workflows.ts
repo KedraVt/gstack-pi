@@ -521,6 +521,9 @@ Write devsecops/security-review-artifact_{sprint}.md (+ docker-build-report_{spr
       execution: "subagent",
       agent: "qa-engineer",
       optional: false,
+      // Sprint loop discipline: QA reports, developers fix (loop-back engine).
+      // Pins beta-qa to its report-only mode — QA holds no commit/fix authority.
+      variant: "report-only",
       skills: ["gstack-sprint-qa"],
       loopBackTo: "implement",
       maxAttempts: sprintMaxAttempts(),

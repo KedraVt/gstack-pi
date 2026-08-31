@@ -78,6 +78,21 @@ export function verdictsEnabled(): boolean {
   return parse(process.env.GSTACK_PI_VERDICTS) ?? true;
 }
 
+// --- Skill source resolution (sprint-beta catalog) ---------------------------
+
+export type SkillInjectionMode = "digest" | "full";
+
+/**
+ * Source of the skill methodology injected into agent contexts:
+ *  - full (default): skills/sprint-beta/<file> — the unified catalog's complete
+ *    SKILL.md, so agents absorb the full deduplicated methodology;
+ *  - digest: skills-distilled/<id>.md — opt-in legacy behavior;
+ *    a missing mapped file always degrades to the digest so a run never breaks.
+ */
+export function skillInjectionMode(): SkillInjectionMode {
+  return process.env.GSTACK_PI_SKILL_INJECTION?.trim().toLowerCase() === "digest" ? "digest" : "full";
+}
+
 // --- Numeric configuration (STEP 5a / COR-06, COR-10) -------------------------
 
 const warnedOnce = new Set<string>();

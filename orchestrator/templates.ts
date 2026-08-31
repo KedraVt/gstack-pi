@@ -1,7 +1,7 @@
 import type { WorkflowPhase, WorkflowContext, Workflow } from "./types.ts";
 import { getWorkflow } from "./workflows.ts";
-import { loadSkillDigest, getSkillInfo, type SkillInfo } from "./skills.ts";
-import { skillsEnabled, manualGates, deterministicSubagents } from "./config.ts";
+import { loadSkillDigest, loadSkillSource, getSkillInfo, type SkillInfo } from "./skills.ts";
+import { skillsEnabled, manualGates, deterministicSubagents, skillInjectionMode } from "./config.ts";
 import { replaceExact } from "./text.ts";
 import { extractHandoff } from "./handoff.ts";
 import { parseRootCauseMarker, validateStrategyTask } from "./skip.ts";
@@ -231,7 +231,7 @@ function buildOrchestratorSkillBlock(phase: WorkflowPhase, ctx: WorkflowContext)
       !isSubagentPhase && !alreadyDelivered;
 
     if (wantFullDigest) {
-      const digest = loadSkillDigest(id);
+      const digest = loadSkillSource(id, skillInjectionMode());
       if (digest) {
         parts.push(digest);
         if (info.fullPath) {
@@ -705,14 +705,18 @@ This phase runs ONLY after explicit user approval. Steps: 1) verify suite green,
 }
 
 /**
- * Embed the full distilled digests into a subagent task string. Subagent
+ * Embed the skill methodology into a subagent task string. Subagent
  * processes have isolated contexts — embedding the methodology in the task is
- * the only reliable way for them to receive it.
+ * the only reliable way for them to receive it. Source is mode-aware:
+ * distilled digest (default) or the sprint-beta unified SKILL.md when
+ * GSTACK_PI_SKILL_INJECTION=full.
  */
 /**
- * Embed the full distilled digests into a subagent task string. Subagent
+ * Embed the skill methodology into a subagent task string. Subagent
  * processes have isolated contexts — embedding the methodology in the task is
- * the only reliable way for them to receive it.
+ * the only reliable way for them to receive it. Source is mode-aware:
+ * distilled digest (default) or the sprint-beta unified SKILL.md when
+ * GSTACK_PI_SKILL_INJECTION=full.
  */
 // OUTPUT CONTRACT (STEP 2a): every specialist ends its work with a structured
 // HANDOFF section so the next chain step receives verified facts, not a wall
@@ -736,7 +740,7 @@ function buildTaskSkills(phase: WorkflowPhase, task: string, skillsOverride?: st
   }
   const blocks: string[] = [];
   for (const id of ids) {
-    const digest = loadSkillDigest(id);
+    const digest = loadSkillSource(id, skillInjectionMode());
     const info = getSkillInfo(id);
     // Per-skill class prefix (STEP 1c): format-critical digests are part of
     // the deliverable; support digests are applied only as useful.

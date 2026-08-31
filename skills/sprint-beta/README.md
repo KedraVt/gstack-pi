@@ -2,9 +2,10 @@
 
 Self-contained, deduplicated catalog merging the gstack skill set (23 SKILL.md,
 vendored `grilling` + `gstack-fix-strategy`) with the Kedra skill set (18
-SKILL.md). Purpose: single source of truth for the sprint cycle, ready for the
-full-skill injection experiment (`GSTACK_PI_SKILL_INJECTION=full`, **deferred to
-the next commit**) while remaining pi-invocable as-is.
+SKILL.md). Purpose: single source of truth for the sprint cycle, used by default for
+full-skill injection (`GSTACK_PI_SKILL_INJECTION=full`). Set
+`GSTACK_PI_SKILL_INJECTION=digest` to use the legacy distilled sources while
+comparing behavior.
 
 ## Naming conventions
 
@@ -50,44 +51,63 @@ fused skills — the workflow orchestrator owns it.
 Sync safety: `scripts/sync-skills.ts` writes only into `skills/gstack/` with a
 closed INCLUDE list — sprint-beta is never touched by sync.
 
-## Selection table — deterministic injection vs invocable (TO FILL, phase 5)
+## Selection table — deterministic injection vs invocable (DECIDED)
 
-| Skill | Inject deterministically | Invocable | Rationale |
+Injection = METHODOLOGY block in the specialist's task (subagents) or full
+methodology in the main phase context (first delivery only; repeats degrade to
+the DoD gate). Invocable = reachable via the skill index, never injected.
+
+| Skill | Inject | Invocable | Target phase / rationale |
 |---|---|---|---|
-| beta-qa | ☐ | ☐ | |
-| beta-code-review | ☐ | ☐ | |
-| beta-debugging | ☐ | ☐ | |
-| beta-security | ☐ | ☐ | |
-| beta-ship | ☐ | ☐ | |
-| grilling | ☐ | ☐ | |
-| gstack-fix-strategy | ☐ | ☐ | |
-| gstack-office-hours | ☐ | ☐ | |
-| gstack-plan-eng-review | ☐ | ☐ | |
-| product-capability | ☐ | ☐ | |
-| system-design | ☐ | ☐ | |
-| adr | ☐ | ☐ | |
-| tasks | ☐ | ☐ | |
-| test-driven-development | ☐ | ☐ | |
-| verification-before-completion | ☐ | ☐ | |
-| code-simplification | ☐ | ☐ | |
-| strategic-compact | ☐ | ☐ | |
-| agent-introspection-debugging | ☐ | ☐ | |
-| docker-manager | ☐ | ☐ | |
-| pipeline-sre | ☐ | ☐ | |
-| gstack-document-release | ☐ | ☐ | |
-| gstack-document-generate | ☐ | ☐ | |
-| (out-of-lifecycle: design-review, retro, plan-*-review, context-*, scrape, skillify, spec, autoplan, learn, code-tour, manim-video, add-model) | — | ☑ default | richiamabili |
+| beta-qa | ☑ | — | qa-verdict (qa-engineer), mode pinned report-only |
+| beta-code-review | ☑ | — | devsecops-review (reviewer) |
+| beta-security | ☑ | — | devsecops-review (devsecops-reviewer) |
+| beta-ship | ☑ | — | commit-archive ONLY (commit/push authority; manual gate) |
+| beta-debugging | ☑ | — | investigate cycle (reproduce/root-cause/fix); never sprint roles |
+| grilling | ☑ post-merge | ☑ today | main `understand` after the develop→sprint merge; never subagents |
+| gstack-fix-strategy | ☑ | — | investigate root-cause chain (VALIDATED/REFUTED parsing) |
+| product-capability | ☑ | — | user-story + capability (main) |
+| system-design | ☑ | — | system-design (main) + architect-gate digest |
+| adr | ☑ | — | system-design (main) |
+| tasks | ☑ | — | backlog (main) |
+| test-driven-development | ☑ | — | implement chain (BE→FE) |
+| verification-before-completion | ☑ | — | implement chain + commit-archive DoD repeat |
+| docker-manager | ☑ conditional | — | devsecops-review, only when repo has Docker |
+| pipeline-sre | ☑ conditional | — | devsecops-review, only when repo has CI |
+| gstack-plan-eng-review | ☑ (needs preamble extraction) | ☑ today | architect-gate after extraction (~1049 r. → ~300 clean) |
+| gstack-office-hours | post-merge (needs preamble extraction) | ☑ today | main `understand` after merge; 1669 r. with harness preamble |
+| gstack-document-release | ☑ post-merge | ☑ today | future sprint `document` phase (962 r. with preamble) |
+| gstack-document-generate | ☑ post-merge | ☑ today | future sprint `document` phase (1249 r. with preamble) |
+| code-simplification | — | ☑ | deviates: "refactor for clarity" inside a minimal-diff loop = scope creep; future optional post-GREEN step |
+| strategic-compact | — | ☑ | deviates: suppresses `## HANDOFF` → breaks chain handoff + verdict parsing; needs HANDOFF-compatible rewrite first |
+| agent-introspection-debugging | — | ☑ | deviates: self-diagnosis belongs to the orchestrator retry logic, never to role agents mid-phase |
+| gstack-spec | — | ☑ | deviates: the planning chain (capability→system-design→adr→tasks) is canonical in sprint |
+| (out-of-lifecycle: design-review, retro, plan-ceo/design/devex-review, context-save/restore, scrape, skillify, autoplan, learn, code-tour, manim-video, add-model) | — | ☑ | side-workflows / session bookkeeping / unrelated artifacts — never injected |
 
 Working criteria: inject if format-critical (the format IS the deliverable) or
 role-gate (the agent cannot complete the phase without it); keep invocable if a
-methodology library consulted on demand or outside the critical path.
+methodology library consulted on demand, a hijack risk, or outside the critical
+path. Deviation taxonomy: contract conflict (strategic-compact,
+agent-introspection-debugging), interaction hijack (grilling/spec/office-hours
+in subagents, autoplan), premature authority (beta-ship outside commit-archive,
+beta-qa fix mode in the loop), duplication (spec vs planning chain),
+boilerplate (whole gstack copies still carrying the ~700-line harness preamble).
 
-## Next commit (planned, NOT in this one)
+## Injection mechanics (IMPLEMENTED)
 
-- `GSTACK_PI_SKILL_INJECTION=full|digest` flag (default `digest`, today-identical)
-- Registry id → sprint-beta file mapping (`gstack-sprint-qa` → `beta-qa`,
-  `gstack-review` → `beta-code-review`, `gstack-ship` → `beta-ship`,
-  `gstack-investigate` → `beta-debugging`, `gstack-sprint-appsec` → `beta-security`,
-  `gstack-sprint-tdd` → `test-driven-development`, …)
-- `buildTaskSkills` / `buildOrchestratorSkillBlock` mode-aware source resolution
-- Unit test for full-mode resolution; suite must stay green with default `digest`
+- `GSTACK_PI_SKILL_INJECTION=full|digest` flag (default `full`; `digest` is the explicit legacy override)
+- Registry id → sprint-beta file mapping via `betaFile` (all 20 registry ids map
+  to catalog files; see `orchestrator/skills.ts`)
+- `loadSkillSource(id, mode)` in `orchestrator/skills.ts`; consumed by
+  `buildTaskSkills` and `buildOrchestratorSkillBlock` in `orchestrator/templates.ts`
+- `qa-verdict` phase pins `variant: "report-only"` (beta-qa mode pinning)
+- Unit tests: `test/beta-injection.test.ts` (in the package test script)
+- Default `full` uses sprint-beta; `digest` remains available as an explicit rollback
+
+## Open follow-ups
+
+- strategic-compact: HANDOFF-compatible rewrite before any injection
+- gstack-plan-eng-review: methodology extraction (~1049 → ~300 lines) for
+  architect-gate injection in full mode
+- develop→sprint phase merge (colloquio, explore, document) — grilling,
+  office-hours and document-* injections activate after it lands

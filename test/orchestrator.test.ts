@@ -377,13 +377,23 @@ describe("skill ingestion", () => {
 });
 
 describe("skill tiering in orchestrator instructions", () => {
-  test("MAIN phases embed full digests", () => {
+  test("MAIN phases embed full methodology (sprint-beta unified source by default)", () => {
     const plan = findPhase("develop", "plan");
     assert.equal(plan.execution, "main");
     const instructions = buildPhaseInstructions(plan, makeCtx("develop", 2));
-    assert.ok(instructions.includes("# Skill: grilling"), "grilling protocol missing");
+    // Full-injection default: the unified sprint-beta SKILL.md (frontmatter
+    // `name: <id>`) is embedded instead of the distilled digest (`# Skill: <id>`
+    // provenance header). Either marker proves the FULL methodology shipped —
+    // not just the compact gate.
+    assert.ok(
+      instructions.includes("name: grilling") || instructions.includes("# Skill: grilling"),
+      "grilling protocol missing",
+    );
     assert.ok(instructions.includes("frontier"), "interview protocol content missing");
-    assert.ok(instructions.includes("# Skill: gstack-plan-eng-review"), "eng rigor missing");
+    assert.ok(
+      instructions.includes("name: gstack-plan-eng-review") || instructions.includes("# Skill: gstack-plan-eng-review"),
+      "eng rigor missing",
+    );
   });
 
   test("SUBAGENT phases carry DoD gates only â€” full digests stay out of orchestrator context", () => {
@@ -468,7 +478,18 @@ test("root-cause phase tasks carry the validate-first directive", () => {
       for (const phase of wf.phases) {
         if (phase.execution !== "subagent") continue;
         const plan = buildDeterministicPlan(phase, makeCtx(wfid, 0));
-        for (const step of plan) assert.ok(!step.task.includes("tool calls"), `${wfid}/${phase.id}`);
+        for (const step of plan) {
+          // Full-injected methodology may MENTION tool calls as advisory text
+          // (prose fallback, "validate tool calls", …). Only an actual BUDGET
+          // directive — a cap/limit/phrase that constrains the delegate — is
+          // forbidden.
+          assert.ok(
+            !/(tool calls?\s+(budget|cap|limit|maximum|max))|(limit[^\n]*\btool calls?\b)|(at most\s+\d+\s+tool calls?)/i.test(
+              step.task,
+            ),
+            `${wfid}/${phase.id}`,
+          );
+        }
       }
     }
   });
