@@ -2639,7 +2639,7 @@ Cause: in-flight tab operations have not completed.
     });
   }
 }
-var __dirname = "C:\\Users\\Mattia\\.pi\\agent\\gstack-pi\\repo\\browse\\src";
+var __dirname = "C:\\Users\\Mattia\\.pi\\agent\\extensions\\gstack-pi\\source\\browse\\src";
 var init_browser_manager = __esm(() => {
   init_file_permissions();
   init_buffers();
@@ -13600,16 +13600,18 @@ function runContentFilters(content, url, command) {
 }
 function urlBlocklistFilter(content, url, _command) {
   const warnings = [];
+  const normalizedUrl = url.toLowerCase();
   for (const domain of BLOCKLIST_DOMAINS) {
-    if (url.includes(domain)) {
+    if (normalizedUrl.includes(domain)) {
       warnings.push(`Page URL matches blocklisted domain: ${domain}`);
     }
   }
-  const urlPattern = /https?:\/\/[^\s"'<>]+/g;
+  const urlPattern = /https?:\/\/[^\s"'<>]+/gi;
   const contentUrls = content.match(urlPattern) || [];
   for (const contentUrl of contentUrls) {
+    const normalizedContentUrl = contentUrl.toLowerCase();
     for (const domain of BLOCKLIST_DOMAINS) {
-      if (contentUrl.includes(domain)) {
+      if (normalizedContentUrl.includes(domain)) {
         warnings.push(`Content contains blocklisted URL: ${contentUrl.slice(0, 100)}`);
         break;
       }
@@ -15185,7 +15187,7 @@ function tombstoneBrowserSkill(name, tier, tiers) {
   fs12.renameSync(src, dst);
   return dst;
 }
-var __dirname = "C:\\Users\\Mattia\\.pi\\agent\\gstack-pi\\repo\\browse\\src";
+var __dirname = "C:\\Users\\Mattia\\.pi\\agent\\extensions\\gstack-pi\\source\\browse\\src";
 var init_browser_skills = () => {};
 
 // browse/src/token-registry.ts
@@ -17369,7 +17371,7 @@ function killAgentByRecord(record, signal = "SIGTERM") {
   safeKill(record.pid, signal);
   return true;
 }
-var __dirname = "C:\\Users\\Mattia\\.pi\\agent\\gstack-pi\\repo\\browse\\src";
+var __dirname = "C:\\Users\\Mattia\\.pi\\agent\\extensions\\gstack-pi\\source\\browse\\src";
 var init_terminal_agent_control = __esm(() => {
   init_error_handling();
   init_file_permissions();
