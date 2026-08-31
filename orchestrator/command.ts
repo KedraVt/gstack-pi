@@ -1,9 +1,34 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getAllWorkflows, getWorkflow, getWorkflowIds } from "./workflows.ts";
-import { loadActiveState, createState, saveState, abortState, resumeState, approveNext, isSecurityFrozen, unfreeze, forceApproveParked, returnParkedWithContext, forceContinuePastGate } from "./state.ts";
+import { loadActiveState, createState, saveState, abortState, resumeState, approveNext, approveOptionalPhase, skipPendingOptional, isSecurityFrozen, unfreeze, forceApproveParked, returnParkedWithContext, forceContinuePastGate } from "./state.ts";
 import { detectGitContext } from "./git.ts";
-import { launchPhase } from "./executor.ts";
+import { launchPhase, executeCurrentPhase, releasePhaseInFlight } from "./executor.ts";
+import { writeRunReport } from "./telemetry.ts";
 import type { GitContext, WorkflowState } from "./types.ts";
+
+/**
+ * Launch the executor with the optional-phase gate disarmed: the user just
+ * explicitly approved this phase via the decision panel (or `/gstack next`).
+ * Without `approvedOptional`, executeCurrentPhase would park the workflow
+ * again instead of running the phase.
+ */
+function launchApprovedOptional(pi: ExtensionAPI, ctx: ExtensionCommandContext, state: WorkflowState): void {
+  launchPhase(pi, ctx, state, (p, c, s) => executeCurrentPhase(p, c, s, { approvedOptional: true }));
+}
+
+/**
+ * Abort helper: records the aborted state AND releases the duplicate-chain
+ * guard for the current phase. Without the release, restarting the same
+ * workflow while the aborted run's chain is still settling would have its
+ * first launch refused ("already running") — the exact racing class the guard
+ * exists to prevent, turned against the user.
+ */
+function abortWorkflow(pi: ExtensionAPI, ctx: ExtensionCommandContext, state: WorkflowState, message: string): void {
+  releasePhaseInFlight(state.workflowId, state.phaseIndex);
+  saveState(pi, abortState(state));
+  try { ctx.ui.setStatus("gstack", undefined); } catch { /* stale */ }
+  ctx.ui.notify(message, "info");
+}
 
 export function getCompletions(prefix: string) {
   // AutocompleteItem shape: { value, label, description? }
@@ -22,6 +47,17 @@ export async function handleGstackCommand(args: string, ctx: ExtensionCommandCon
   const argId = args.trim().toLowerCase();
 
   const activeState = loadActiveState(ctx);
+
+  // Optional-phase decision gate (STEP 2g v2): "/gstack next" while parked at
+  // an optional phase means "Run it" — the explicit, foreground twin of the
+  // panel choice below. Never a background prompt the user can miss.
+  if (activeState?.pendingOptional && activeState.status === "awaiting_approval" && argId === "next") {
+    const approved = approveOptionalPhase(activeState);
+    saveState(pi, approved);
+    ctx.ui.notify("Approved — running the optional phase.", "info");
+    launchApprovedOptional(pi, ctx, approved);
+    return;
+  }
 
   // Sprint human-control panels (plan B7): freeze / unreadable verdict /
   // numbering anomaly / retry exhaustion. Intercepted for BOTH `/gstack next`
@@ -55,6 +91,45 @@ export async function handleGstackCommand(args: string, ctx: ExtensionCommandCon
     const phaseName = workflow?.phases[activeState.phaseIndex]?.name ?? "unknown";
     const progress = `(${activeState.phaseIndex + 1}/${workflow?.phases.length ?? 0})`;
 
+    if (activeState.status === "awaiting_approval" && activeState.pendingOptional) {
+      // Optional-phase decision gate (STEP 2g v2): the workflow is parked AT an
+      // optional phase. Present explicit Run/Skip/Abort choices — the user
+      // decides in the foreground with full context, never via a background
+      // prompt that defaults to "Yes" on Enter.
+      const wf = getWorkflow(activeState.workflowId);
+      const phaseName = wf?.phases[activeState.phaseIndex]?.name ?? "unknown";
+      const choice = await ctx.ui.select(
+        `Optional phase "${phaseName}" ${progress} — your decision`,
+        [
+          `Run "${phaseName}" ${progress}`,
+          `Skip "${phaseName}" — continue without it`,
+          "Abort workflow",
+        ],
+      );
+      if (choice?.startsWith("Run")) {
+        const approved = approveOptionalPhase(activeState);
+        saveState(pi, approved);
+        launchApprovedOptional(pi, ctx, approved);
+      } else if (choice?.startsWith("Skip")) {
+        const next = skipPendingOptional(activeState, wf?.phases ?? [], wf?.phases.length ?? 0);
+        saveState(pi, next);
+        if (next.status === "completed") {
+          writeRunReport(ctx.cwd, activeState.workflowId);
+          ctx.ui.setStatus("gstack", undefined);
+          ctx.ui.notify(`Workflow "${activeState.workflowId}" completed (optional phase skipped).`, "info");
+        } else {
+          ctx.ui.notify(`Skipped "${phaseName}" — continuing workflow.`, "info");
+          launchPhase(pi, ctx, next);
+        }
+      } else if (choice === "Abort workflow") {
+        const confirmed = await ctx.ui.confirm("Abort workflow?", `Stop "${activeState.workflowId}"?`);
+        if (confirmed) {
+          abortWorkflow(pi, ctx, activeState, "Workflow aborted.");
+        }
+      }
+      return;
+    }
+
     if (activeState.status === "awaiting_approval") {
       const choice = await ctx.ui.select(
         "Workflow awaiting your approval",
@@ -70,9 +145,7 @@ export async function handleGstackCommand(args: string, ctx: ExtensionCommandCon
       } else if (choice === "Abort workflow") {
         const confirmed = await ctx.ui.confirm("Abort workflow?", `Stop "${activeState.workflowId}"?`);
         if (confirmed) {
-          saveState(pi, abortState(activeState));
-          ctx.ui.setStatus("gstack", undefined);
-          ctx.ui.notify("Workflow aborted.", "info");
+          abortWorkflow(pi, ctx, activeState, "Workflow aborted.");
         }
       }
       return;
@@ -96,9 +169,7 @@ export async function handleGstackCommand(args: string, ctx: ExtensionCommandCon
     if (choice === "Abort workflow") {
       const confirmed = await ctx.ui.confirm("Abort workflow?", `Stop "${activeState.workflowId}" at phase ${activeState.phaseIndex + 1}?`);
       if (confirmed) {
-        saveState(pi, abortState(activeState));
-        ctx.ui.setStatus("gstack", undefined);
-        ctx.ui.notify("Workflow aborted.", "info");
+        abortWorkflow(pi, ctx, activeState, "Workflow aborted.");
       }
       return;
     }
@@ -195,9 +266,7 @@ export async function handleSprintPanel(state: WorkflowState, ctx: ExtensionComm
       // Review W3: an explicit escape hatch — the freeze must never soft-lock
       // a user who lost the phrase or wants to abandon the sprint.
       if (await ctx.ui.confirm("Abort frozen workflow?", `Abandon "sprint" despite the unresolved security finding?`)) {
-        saveState(pi, abortState(state));
-        try { ctx.ui.setStatus("gstack", undefined); } catch { /* stale */ }
-        ctx.ui.notify("Frozen workflow aborted.", "info");
+        abortWorkflow(pi, ctx, state, "Frozen workflow aborted.");
       }
     } else {
       ctx.ui.notify(`Freeze kept${answer === undefined ? " (prompt dismissed)" : answer.trim() === "" ? "" : " — exact phrase not provided"}.`, "warning");
@@ -233,9 +302,7 @@ export async function handleSprintPanel(state: WorkflowState, ctx: ExtensionComm
       ctx.ui.notify(`Verdict excerpt: ${excerpt.slice(0, 1500)}`, "info");
     } else if (choice === "Abort workflow") {
       if (await ctx.ui.confirm("Abort workflow?", `Stop "sprint" at phase ${state.phaseIndex + 1}?`)) {
-        saveState(pi, abortState(state));
-        try { ctx.ui.setStatus("gstack", undefined); } catch { /* stale */ }
-        ctx.ui.notify("Workflow aborted.", "info");
+        abortWorkflow(pi, ctx, state, "Workflow aborted.");
       }
     }
     return true; // handled either way — never fall through while parked
@@ -259,9 +326,7 @@ export async function handleSprintPanel(state: WorkflowState, ctx: ExtensionComm
       launchPhase(pi, ctx, next);
     } else if (choice === "Abort workflow") {
       if (await ctx.ui.confirm("Abort workflow?", `Stop "sprint" at phase ${state.phaseIndex + 1}?`)) {
-        saveState(pi, abortState(state));
-        try { ctx.ui.setStatus("gstack", undefined); } catch { /* stale */ }
-        ctx.ui.notify("Workflow aborted.", "info");
+        abortWorkflow(pi, ctx, state, "Workflow aborted.");
       }
     }
     return true;

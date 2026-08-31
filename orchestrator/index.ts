@@ -5,8 +5,8 @@ import { createInputRouter } from "./router.ts";
 import { loadActiveState, saveState, advancePhase, gateForApproval, createState } from "./state.ts";
 import type { AdvanceOptions } from "./state.ts";
 import { getWorkflow, getWorkflowIds } from "./workflows.ts";
-import { launchPhase, invalidateRuntime } from "./executor.ts";
-import { manualGates, autoGateValidated } from "./config.ts";
+import { launchPhase, invalidateRuntime, advanceBlockReason } from "./executor.ts";
+import { manualGates, autoGateValidated, optionalPhases } from "./config.ts";
 import { isValidatedStrategy } from "./skip.ts";
 import { ensureRun, writeRunReport } from "./telemetry.ts";
 import { SECURITY_SECTION } from "../lib/content-security.ts";
@@ -73,6 +73,33 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       }
 
       const phase = workflow.phases[state.phaseIndex];
+
+      // Optional-phase decision gate (STEP 2g v2): while the workflow is parked
+      // at an optional phase awaiting the user's Run/Skip/Abort decision, the
+      // model can neither complete nor skip the phase via gstack_advance — the
+      // decision belongs exclusively to the /gstack panel.
+      if (state.pendingOptional) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `The workflow is parked at the optional phase "${phase?.name ?? "?"}" awaiting an explicit user decision (Run / Skip / Abort) via /gstack. Do NOT call gstack_advance again and do not start the phase — the user decides.`,
+          }],
+        };
+      }
+
+      // Advance-block guard (audit fix): the state machine, not the model,
+      // decides when a phase may be recorded. Two cases are refused: a parked
+      // manual gate (only /gstack next continues it) and an in-flight
+      // delegation (its results, not a model summary, complete the phase).
+      const blocked = advanceBlockReason(state);
+      if (blocked) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `gstack: ${blocked}. Do NOT call gstack_advance again.`,
+          }],
+        };
+      }
 
       // Sprint loop engine (D1–D3): verdict routing needs the phase list and
       // cwd; the pendingVerdict was stashed at delegation time.
@@ -172,10 +199,17 @@ export function initOrchestrator(pi: ExtensionAPI): void {
       // uncaught rejections. See executor.launchPhase.
       launchPhase(pi, ctx, newState);
 
+      // STEP 2g v2: when the next phase is optional in interactive mode, the
+      // executor will park the workflow for the user's Run/Skip/Abort decision
+      // — tell the model so it does not expect the phase to run on its own.
+      const decisionNote =
+        nextPhase?.optional && optionalPhases() === "ask"
+          ? ` This phase is OPTIONAL: the workflow will pause and the user decides via /gstack whether to run "${nextPhase.name}". Do not call gstack_advance for it.`
+          : "";
       return {
         content: [{
           type: "text" as const,
-          text: `Phase "${phase.name}" recorded. Advancing to: ${nextPhase.name} (${newState.phaseIndex + 1}/${workflow.phases.length}).`,
+          text: `Phase "${phase.name}" recorded. Advancing to: ${nextPhase.name} (${newState.phaseIndex + 1}/${workflow.phases.length}).${decisionNote}`,
         }],
       };
     },

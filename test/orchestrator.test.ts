@@ -4,12 +4,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createState, advancePhase, abortState, resumeState, pauseState, gateForApproval, approveNext } from "../orchestrator/state.ts";
+import { createState, advancePhase, abortState, resumeState, pauseState, gateForApproval, approveNext, gateOptionalPhase, approveOptionalPhase, skipPendingOptional } from "../orchestrator/state.ts";
 import { getAllWorkflows, getWorkflow, getWorkflowIds } from "../orchestrator/workflows.ts";
 import { loadSkillDigest, getSkillInfo, buildSkillIndex, getSkillIds } from "../orchestrator/skills.ts";
 import { buildPhaseInstructions, buildDeterministicPlan, planFilePath } from "../orchestrator/templates.ts";
 import type { WorkflowContext, WorkflowPhase } from "../orchestrator/types.ts";
-import { launchPhase, ctxAlive } from "../orchestrator/executor.ts";
+import { launchPhase, ctxAlive, isPhaseInFlight, advanceBlockReason, releasePhaseInFlight } from "../orchestrator/executor.ts";
 import { activityLabelFromEvent } from "../orchestrator/spawn.ts";
 import { runSubagent, resolveTimeoutMs } from "../orchestrator/spawn.ts";
 import {
@@ -93,6 +93,88 @@ test("launchPhase reports non-stale errors best-effort", async () => {
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(seen.length, 1);
   assert.ok(seen[0].msg.includes("boom during phase"));
+});
+
+test("launchPhase refuses a duplicate chain for the same workflow phase (2026-08-31 post-mortem)", async () => {
+  // Post-mortem: the user's "No" on the optional-phase dialog was recorded and
+  // the workflow completed, yet a second chain for the SAME phase — relaunched
+  // via /gstack → Resume while the first dialog was pending — ran the QA
+  // worker 15 seconds later. A phase must never run two concurrent chains.
+  const seen: string[] = [];
+  const pi = {} as any;
+  const ctx = { ui: { notify(msg: string) { seen.push(msg); } } } as any;
+  const state = { workflowId: "investigate", phaseIndex: 4 } as any;
+  let runs = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => { release = r; });
+
+  launchPhase(pi, ctx, state, async () => { runs++; await gate; });
+  launchPhase(pi, ctx, state, async () => { runs++; });
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(runs, 1, "second launch must be refused while the first chain is in flight");
+  assert.ok(seen.some((m) => m.includes("already running")), "the refusal must be surfaced to the user");
+  assert.equal(isPhaseInFlight("investigate", 4), true);
+
+  release();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(isPhaseInFlight("investigate", 4), false, "registry released after the chain settles");
+
+  // Once settled, relaunching the phase is legitimate again.
+  launchPhase(pi, ctx, state, async () => { runs++; });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(runs, 2);
+});
+
+// --- Audit follow-up: same racing class, other cycles -------------------------
+
+test("advanceBlockReason refuses a model advance on a parked manual gate", () => {
+  // Second gstack_advance in the same turn after a decision phase: the parked
+  // state points at the NEXT phase (a subagent phase with no chain in flight),
+  // so without this block the advance would record a phase that never ran as
+  // completed — mechanically bypassing develop.plan / investigate.root-cause.
+  const state = { workflowId: "develop", phaseIndex: 3, status: "awaiting_approval" } as any;
+  assert.match(advanceBlockReason(state) ?? "", /PARKED awaiting user approval/);
+});
+
+test("advanceBlockReason blocks gstack_advance while a delegation chain is in flight", async () => {
+  // Mid-delegation user input makes the router tell the model to "continue the
+  // current phase"; an advance accepted then records the phase completed
+  // before its work exists, and the follow-up advance after the real chain
+  // delivers skips the NEXT phase. The chain decides, not the model.
+  const state = { workflowId: "investigate", phaseIndex: 2 } as any;
+  assert.equal(advanceBlockReason(state), null, "no chain → advance allowed");
+
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => { release = r; });
+  const pi = {} as any;
+  const ctx = { ui: { notify() { /* ignored */ } } } as any;
+  launchPhase(pi, ctx, state, async () => { await gate; });
+
+  assert.match(advanceBlockReason(state) ?? "", /still running/, "in-flight chain must block the advance");
+
+  release();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(advanceBlockReason(state), null, "settled chain → advance allowed again");
+});
+
+test("releasePhaseInFlight lets a restarted workflow launch immediately after abort", () => {
+  const pi = {} as any;
+  const ctx = { ui: { notify() { /* ignored */ } } } as any;
+  const state = { workflowId: "qa", phaseIndex: 0 } as any;
+
+  // Orphaned chain that never settles (simulates abort mid-delegation).
+  launchPhase(pi, ctx, state, async () => { await new Promise(() => {}); });
+  assert.equal(isPhaseInFlight("qa", 0), true);
+
+  // abortWorkflow() releases the key even though the chain never settles —
+  // otherwise restarting the same workflow would be refused by the guard.
+  releasePhaseInFlight(state.workflowId, state.phaseIndex);
+  assert.equal(isPhaseInFlight("qa", 0), false);
+
+  let launched = false;
+  launchPhase(pi, ctx, state, async () => { launched = true; });
+  assert.equal(launched, true, "restarted workflow must not be blocked by the aborted run's chain");
 });
 
 function makeCtx(workflowId: string, phaseIndex = 0, skillsDelivered: string[] = []): WorkflowContext {
@@ -839,6 +921,69 @@ describe("optional-phase modes (STEP 2g)", () => {
       if (original === undefined) delete process.env.GSTACK_PI_OPTIONAL_PHASES;
       else process.env.GSTACK_PI_OPTIONAL_PHASES = original;
     }
+  });
+});
+
+// --- STEP 2g v2: optional-phase decision gate ---------------------------------
+// The old flow prompted `ctx.ui.confirm` from the fire-and-forget background
+// chain: the dialog fired mid-stream, stole editor focus, and defaulted to
+// "Yes" on Enter — a user typing "no, skip QA" + Enter LAUNCHED the QA phase
+// they were refusing. The fix parks the workflow at the optional phase and
+// hands the Run/Skip/Abort decision to the foreground /gstack panel.
+
+describe("optional-phase decision gate (STEP 2g v2)", () => {
+  const investigate = getWorkflow("investigate")!;
+  const qaIndex = investigate.phases.findIndex((p) => p.id === "regression-qa");
+
+  test("investigate's regression-qa is the last phase and optional", () => {
+    assert.equal(investigate.phases.length, 5);
+    assert.equal(qaIndex, 4);
+    const qa = investigate.phases[qaIndex];
+    assert.equal(qa.optional, true);
+    assert.ok(qa.skipWhen, "conditional auto-skip (clean tree) must be preserved");
+  });
+
+  test("gateOptionalPhase parks the workflow AT the optional phase with the marker set", () => {
+    const state = { ...createState("investigate", "fix login bug"), phaseIndex: qaIndex };
+    const gated = gateOptionalPhase(state);
+    assert.equal(gated.status, "awaiting_approval");
+    assert.equal(gated.pendingOptional, true);
+    assert.equal(gated.phaseIndex, qaIndex, "phaseIndex must stay at the optional phase");
+  });
+
+  test("approveOptionalPhase clears the marker and reactivates at the same phase", () => {
+    const state = { ...createState("investigate", "fix login bug"), phaseIndex: qaIndex, status: "awaiting_approval" as const, pendingOptional: true };
+    const approved = approveOptionalPhase(state);
+    assert.equal(approved.status, "active");
+    assert.equal(approved.pendingOptional, undefined);
+    assert.equal(approved.phaseIndex, qaIndex);
+  });
+
+  test("skipPendingOptional records 'skipped' and COMPLETES the workflow when the phase is last", () => {
+    const state = { ...createState("investigate", "fix login bug"), phaseIndex: qaIndex, status: "awaiting_approval" as const, pendingOptional: true };
+    const next = skipPendingOptional(state, investigate.phases, investigate.phases.length);
+    assert.equal(next.status, "completed", "refusing the last phase must finish the workflow, not hang it");
+    assert.equal(next.pendingOptional, undefined);
+    assert.equal(next.results["regression-qa"]?.status, "skipped");
+    assert.match(next.results["regression-qa"]?.summary ?? "", /Skipped by user/);
+  });
+
+  test("skipPendingOptional advances linearly when the optional phase is NOT last", () => {
+    const develop = getWorkflow("develop")!;
+    const shipIndex = develop.phases.findIndex((p) => p.id === "ship");
+    const state = { ...createState("develop", "add dark mode"), phaseIndex: shipIndex, status: "awaiting_approval" as const, pendingOptional: true };
+    const next = skipPendingOptional(state, develop.phases, develop.phases.length);
+    assert.equal(next.status, "active");
+    assert.equal(next.phaseIndex, shipIndex + 1, "moves past ship to document");
+    assert.equal(next.results["ship"]?.status, "skipped");
+  });
+
+  test("gate round-trip: park then skip completes and clears the marker", () => {
+    const state = { ...createState("investigate", "fix login bug"), phaseIndex: qaIndex };
+    const gated = gateOptionalPhase(state);
+    const skipped = skipPendingOptional(gated, investigate.phases, investigate.phases.length);
+    assert.equal(skipped.status, "completed");
+    assert.equal(skipped.pendingOptional, undefined);
   });
 });
 

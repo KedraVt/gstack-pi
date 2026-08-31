@@ -305,6 +305,48 @@ export function approveNext(state: WorkflowState): WorkflowState {
   return { ...state, status: "active" };
 }
 
+// --- Optional-phase decision gate (STEP 2g v2) --------------------------------
+//
+// The old flow prompted `ctx.ui.confirm("Run the optional phase?")` from the
+// fire-and-forget background chain. That dialog fires mid-stream (the model is
+// still generating after gstack_advance returned), steals editor focus, and
+// defaults to "Yes" on Enter — so a user typing "no, skip QA" literally
+// LAUNCHED the QA phase they were refusing. Prompting from a background chain
+// cannot be a real decision point, so the decision now lives where every other
+// human decision lives: the foreground /gstack panel (Run / Skip / Abort),
+// exactly like the manual decision gates. The model cannot bypass it: while
+// parked, gstack_advance refuses and the executor never enters the phase.
+
+/**
+ * Park the workflow at the current (optional) phase for an explicit human
+ * Run/Skip/Abort decision. phaseIndex stays AT the optional phase.
+ */
+export function gateOptionalPhase(state: WorkflowState): WorkflowState {
+  return { ...state, status: "awaiting_approval", pendingOptional: true };
+}
+
+/** The user chose "Run": clear the marker and resume execution at the phase. */
+export function approveOptionalPhase(state: WorkflowState): WorkflowState {
+  return { ...state, status: "active", pendingOptional: undefined };
+}
+
+/**
+ * The user chose "Skip": record the phase as skipped (never silently — the
+ * decision came from the interactive panel) and advance linearly. When the
+ * optional phase is last, the workflow completes.
+ */
+export function skipPendingOptional(state: WorkflowState, phases: WorkflowPhase[], totalPhases: number): WorkflowState {
+  const phase = phases[state.phaseIndex];
+  const cleared: WorkflowState = { ...state, status: "active", pendingOptional: undefined };
+  if (!phase) return cleared;
+  return advancePhase(
+    cleared,
+    phase.id,
+    { status: "skipped", summary: "Skipped by user (optional-phase decision panel)" },
+    totalPhases,
+  );
+}
+
 export function pauseState(state: WorkflowState): WorkflowState {
   return { ...state, status: "paused" };
 }

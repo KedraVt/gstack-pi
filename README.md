@@ -10,7 +10,7 @@ One extension, two layers:
 
 - **Deterministic subagents** — specialists (scout/planner/worker/reviewer) are spawned by the orchestrator itself in isolated `pi` processes; delegation no longer depends on the model's discretion. The `subagent` tool remains for ad-hoc use.
 - **Interactive plan cycle** — scout explores → you are interviewed (grilling protocol rounds with recommended answers + office-hours judgment + eng-review rigor, ≤5 questions/round) → plan written to `.gstack/plans/<slug>.md` → your approval gate (`/gstack next`) → worker implements from the plan file.
-- **Manual decision gates** — `develop.plan` and `investigate.root-cause` pause for user approval before code is touched.
+- **Manual decision gates** — `develop.plan` and `investigate.root-cause` pause for user approval before code is touched. Optional phases (e.g. `investigate.regression-qa`) park the same way: the workflow pauses and the `/gstack` panel asks you to **Run / Skip / Abort** — no background Yes-defaulted dialog you can answer by accident.
 - **Skill ingestion** — distilled methodology digests (~2K tokens) from gstack's SKILL.md files are injected by the workflow itself: full digest to whoever does the work, compact DoD+best-practices gates for verification and repeats.
 - **Documentation phases** — optional doc-update phase on `develop` and `ship` (Diataxis coverage map, chained generation for missing docs).
 - **`qa-report` workflow** — full QA methodology, report-only, never modifies code.

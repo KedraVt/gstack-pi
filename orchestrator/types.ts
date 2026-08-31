@@ -132,6 +132,14 @@ export interface WorkflowState {
   retryContext?: RetryContext;
   /** Sprint number, discovered once at the user-story phase (E5). Zero-pad to 2 digits when interpolating. */
   sprintNumber?: number;
+  /**
+   * Optional-phase decision gate (STEP 2g v2): the workflow is parked at an
+   * `optional` phase awaiting an explicit human Run/Skip/Abort decision in the
+   * /gstack panel. Never set for GSTACK_PI_OPTIONAL_PHASES=auto|skip, and
+   * cleared the moment the user decides. While set, gstack_advance refuses to
+   * touch the phase — the model cannot bypass the gate.
+   */
+  pendingOptional?: boolean;
 }
 
 export interface GitContext {
