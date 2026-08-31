@@ -64,6 +64,15 @@ export function retryTimeoutMs(req: Pick<SpawnRequest, "timeoutMs" | "phaseId">,
   return Math.round(resolveTimeoutMs(req) * timeoutScale);
 }
 
+/**
+ * STEP 4d reopen decision (pure, B4): the collapsed validate-only root-cause
+ * step declared REFUTED — the full scout→planner chain MUST be rebuilt and
+ * re-run. Extracted for tests; the async path may never skip the reopen.
+ */
+export function shouldReopenFullChain(wasCollapsed: boolean, lastOutput: string | undefined): boolean {
+  return wasCollapsed && isRefutedStrategy(lastOutput ?? "");
+}
+
 // --- Runtime liveness -------------------------------------------------------
 // Background phase chains (deterministic subagent runs) intentionally outlive
 // the tool/command handler that started them. But if the user reloads the
@@ -614,7 +623,12 @@ async function runDeterministicDelegation(
 
   // STEP 4d — mandatory reopen path: REFUTED validation → run the FULL
   // original chain, prefixing the scout so it does not revisit the dead end.
-  if (wasCollapsed && out.length > 0 && isRefutedStrategy(out[out.length - 1].result.output ?? "")) {
+  // B4 fix: the reopen is UNCONDITIONAL once refuted. Previously it was gated
+  // on a regex extracting the refuted cause from the validate task — a drift
+  // there silently dropped the mandatory reopen and the workflow continued
+  // with nothing but a refuted validation output. The "do not revisit" NOTE
+  // is the only conditional part (plus a visible warning when absent).
+  if (shouldReopenFullChain(wasCollapsed, out[out.length - 1]?.result.output)) {
     try {
       ctx.ui.notify("gstack: root-cause hypothesis REFUTED by validation — rebuilding the full investigation chain.", "warning");
     } catch {
@@ -629,9 +643,20 @@ async function runDeterministicDelegation(
     };
     delete freshCtx.state.results["reproduce"];
     const fullPlan = buildDeterministicPlan(phase as any, freshCtx);
-    if (fullPlan.length > 0 && causeMatch) {
-      const note = `NOTE: the hypothesis '${causeMatch[1]}' was REFUTED because: ${reasonMatch?.[1]?.trim() ?? "validation against the code failed"}. Do not revisit it.\n\n`;
-      fullPlan[0] = { ...fullPlan[0], task: replaceExact(fullPlan[0].task, /^/, note) };
+    if (fullPlan.length > 0) {
+      if (causeMatch) {
+        const note = `NOTE: the hypothesis '${causeMatch[1]}' was REFUTED because: ${reasonMatch?.[1]?.trim() ?? "validation against the code failed"}. Do not revisit it.\n\n`;
+        fullPlan[0] = { ...fullPlan[0], task: replaceExact(fullPlan[0].task, /^/, note) };
+      } else {
+        try {
+          ctx.ui.notify(
+            "gstack: could not extract the refuted cause from the validate task — reopening the full chain WITHOUT the 'do not revisit' note.",
+            "warning",
+          );
+        } catch {
+          /* stale ctx */
+        }
+      }
       return [...out, ...(await runSteps(fullPlan))];
     }
   }

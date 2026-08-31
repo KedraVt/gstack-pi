@@ -217,6 +217,9 @@ export function artifactForVariable(variable: string, cwd: string, sprintNumber?
     case "code-review":
       return [path.join(cwd, "devsecops", `code-review-artifact${sprintStamp(sprintNumber)}.md`)];
     case "security-review":
+    // B5: the severity rides the security-review artifact — freeze/loop-back
+    // routing must be disk-confirmable against the same file.
+    case "severity":
       return [path.join(cwd, "devsecops", `security-review-artifact${sprintStamp(sprintNumber)}.md`)];
     case "docker-build":
     case "docker-security":
@@ -251,22 +254,37 @@ function sprintStamp(sprintNumber?: number): string {
 }
 
 /**
+ * Confirm one `variable == value` line against the variable's on-disk
+ * artifact(s) within the ≤64KB tail (line-anchored — see B5/BUG-3 notes).
+ */
+function artifactConfirmsLine(variable: string, value: string, cwd: string, sprintNumber?: number): boolean {
+  const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const needle = new RegExp(`^\\s*(?:#+\\s*)?${escaped}\\s*==\\s*${value}\\s*$`, "im");
+  const candidates = artifactForVariable(variable, cwd, sprintNumber);
+  return candidates.some((artifactPath) => {
+    const tail = readTail(artifactPath)?.toLowerCase();
+    return tail ? needle.test(tail) : false;
+  });
+}
+
+/**
  * Verify EVERY parsed verdict against its on-disk artifact (guard 3): the
  * artifact must exist AND contain the same `variable == value` verdict on its
  * OWN line within the ≤64KB tail (BUG-3 fix: line-anchored match — template
  * prose like `code-review == approved|rejected` can no longer confirm a
  * verdict). Any disagreement/absence ⇒ false (fail-closed).
+ *
+ * B5 fix: the severity is disk-verified too. It is not part of
+ * `parsed.verdicts`, yet it alone decides freeze-vs-loop-back (D3) — leaving
+ * it HANDOFF-only would let a planted/paraphrased HANDOFF downgrade a
+ * critical rejection to low and silently bypass the security freeze.
  */
 export function verifyArtifactVerdicts(parsed: ParsedVerdict, cwd: string, sprintNumber?: number): boolean {
   for (const [variable, value] of Object.entries(parsed.verdicts)) {
-    const escaped = `${variable}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const needle = new RegExp(`^\\s*(?:#+\\s*)?${escaped}\\s*==\\s*${value}\\s*$`, "im");
-    const candidates = artifactForVariable(variable, cwd, sprintNumber);
-    const confirmed = candidates.some((artifactPath) => {
-      const tail = readTail(artifactPath)?.toLowerCase();
-      return tail ? needle.test(tail) : false;
-    });
-    if (!confirmed) return false;
+    if (!artifactConfirmsLine(variable, value, cwd, sprintNumber)) return false;
+  }
+  if (parsed.severity !== undefined && !artifactConfirmsLine("severity", parsed.severity, cwd, sprintNumber)) {
+    return false;
   }
   return true;
 }

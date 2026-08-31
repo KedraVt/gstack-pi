@@ -73,7 +73,11 @@ export function loopbacksEnabled(): boolean {
   return parse(process.env.GSTACK_PI_LOOPBACKS) ?? true;
 }
 
-/** Deterministic verdict parsing. Off ⇒ gates rely on human reading; no auto-routing. */
+/**
+ * Deterministic verdict parsing. Off ⇒ verdict-bearing phases PAUSE for the
+ * human after completing — no auto-routing in either direction (never a
+ * silent advance past a possible rejection).
+ */
 export function verdictsEnabled(): boolean {
   return parse(process.env.GSTACK_PI_VERDICTS) ?? true;
 }

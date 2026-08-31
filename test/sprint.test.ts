@@ -14,7 +14,7 @@ import { parseHandoffVerdicts, verifyArtifactVerdicts, extractBlockers, buildRet
 import { computeNextSprintNumber, pad2, sprintArchiveDir, archivedSprintDirs } from "../orchestrator/sprint.ts";
 import { buildPhaseInstructions, buildDeterministicPlan, retryContextBlock, conditionalSkillIds, glossaryTable, MASTER_DOD } from "../orchestrator/templates.ts";
 import { modelTierFor, sprintMaxAttempts, sprintArchMaxAttempts, timeoutClassFor } from "../orchestrator/config.ts";
-import { retryTimeoutMs } from "../orchestrator/executor.ts";
+import { retryTimeoutMs, shouldReopenFullChain } from "../orchestrator/executor.ts";
 
 const SPRINT = getWorkflow("sprint")!;
 
@@ -877,6 +877,51 @@ describe("code-review pass-1 fixes", () => {
       assert.equal(buildRetryFeedback(parsed as any, "devsecops-review", unstampedDir, 3), "");
     } finally {
       rmSync(unstampedDir, { recursive: true, force: true });
+    }
+  });
+
+  test("B4: shouldReopenFullChain — a REFUTED validate step mandates the reopen", () => {
+    assert.equal(shouldReopenFullChain(true, "REFUTED: the null check was already present"), true);
+    assert.equal(shouldReopenFullChain(true, "VALIDATED: mechanism confirmed @ app/db.ts:42"), false);
+    assert.equal(shouldReopenFullChain(false, "REFUTED: x"), false, "only a collapsed chain reopens");
+    assert.equal(shouldReopenFullChain(true, undefined), false);
+    assert.equal(shouldReopenFullChain(true, ""), false);
+  });
+
+  test("B5: severity is disk-verified (freeze/loop-back routing cannot rest on the HANDOFF alone)", () => {
+    const dir = tmpDir("gstack-b5-");
+    try {
+      fs.mkdirSync(path.join(dir, "devsecops"), { recursive: true });
+      writeFileSync(
+        path.join(dir, "devsecops", "security-review-artifact_03.md"),
+        "# Security Review\n\nsecurity-review == rejected\n\nseverity == high\n",
+      );
+      const rejected: any = { verdicts: { "security-review": "rejected" } };
+
+      // HANDOFF and disk agree on high ⇒ verified.
+      assert.equal(verifyArtifactVerdicts({ ...rejected, severity: "high" } as any, dir, 3), true);
+      // Severity missing on disk (only in the HANDOFF) ⇒ fail closed.
+      assert.equal(verifyArtifactVerdicts({ ...rejected, severity: "low" } as any, dir, 3), false, "downgrade without disk confirmation must fail");
+      // No severity claimed ⇒ severity check simply doesn't apply.
+      assert.equal(verifyArtifactVerdicts(rejected, dir, 3), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("B6: GSTACK_PI_VERDICTS=off parks verdict-bearing phases instead of silently advancing", () => {
+    const saved = process.env.GSTACK_PI_VERDICTS;
+    try {
+      process.env.GSTACK_PI_VERDICTS = "off";
+      const state = sprintState(7); // devsecops-review (verdict-bearing)
+      const next = advancePhase(state, "devsecops-review", { status: "completed", summary: "gate ran" }, SPRINT.phases.length, { phases: SPRINT.phases });
+      assert.equal(next.status, "paused");
+      assert.equal(next.pausedReason, "verdicts-disabled:devsecops-review");
+      assert.equal(next.results["devsecops-review"]?.status, "completed", "the gate did run — it is recorded, then parked");
+      assert.equal(next.phaseIndex, 7, "phaseIndex must not advance past the gate");
+    } finally {
+      if (saved === undefined) delete process.env.GSTACK_PI_VERDICTS;
+      else process.env.GSTACK_PI_VERDICTS = saved;
     }
   });
 });

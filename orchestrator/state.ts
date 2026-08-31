@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { WorkflowState, PhaseResult, WorkflowPhase, ParsedVerdict } from "./types.ts";
-import { sprintMaxAttempts, sprintArchMaxAttempts, loopbacksEnabled } from "./config.ts";
+import { sprintMaxAttempts, sprintArchMaxAttempts, loopbacksEnabled, verdictsEnabled } from "./config.ts";
 import { buildRetryFeedback, PHASE_EXPECTATIONS, NEGATIVE_VALUES } from "./verdicts.ts";
 import { pad2 } from "./sprint.ts";
 
@@ -141,6 +141,16 @@ export function advancePhase(state: WorkflowState, phaseId: string, result: Phas
   }
 
   const phase = opts?.phases?.find((p) => p.id === phaseId);
+  // B6 fix: with deterministic verdict parsing disabled, verdict-bearing
+  // phases must NOT auto-advance. The kill-switch's documented contract is
+  // "gates rely on human reading; no auto-routing" — meaning no routing in
+  // EITHER direction: the completed gate pauses for the human instead of
+  // silently advancing past a possible rejection.
+  if (phase?.loopBackTo && !verdictsEnabled()) {
+    next.status = "paused";
+    next.pausedReason = `verdicts-disabled:${phase.id}`;
+    return next;
+  }
   const parsed = state.pendingVerdict?.parsed ?? null;
   if (phase?.loopBackTo && parsed) {
     const action = routeVerdict(phase.id, parsed);
