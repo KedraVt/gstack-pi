@@ -4,7 +4,7 @@ import { getWorkflow } from "./workflows.ts";
 import { saveState, advancePhase, gateForApproval, gateOptionalPhase, parkForUnreadableVerdict, loadActiveState, type AdvanceOptions } from "./state.ts";
 import { buildPhaseInstructions, buildDeterministicPlan } from "./templates.ts";
 import { detectGitContext } from "./git.ts";
-import { runSubagent, type SpawnRequest, type SpawnResult, defaultTimeoutMs } from "./spawn.ts";
+import { runSubagent, type SpawnRequest, type SpawnResult, resolveTimeoutMs } from "./spawn.ts";
 import { parseHandoffVerdicts, verifyArtifactVerdicts, mergeParseOutcomes } from "./verdicts.ts";
 import { computeNextSprintNumber } from "./sprint.ts";
 import { deterministicSubagents, skillsEnabled, optionalPhases, maxRunTokens, delegationBudgetMs, modelTierFor, verdictsEnabled } from "./config.ts";
@@ -51,6 +51,17 @@ export function retryDecision(result: SpawnResult, attempt: number): { retry: bo
     timeoutScale: 1.5,
     delayMs: result.timedOut ? RETRY_DELAY_MS : FAST_RETRY_DELAY_MS,
   };
+}
+
+/**
+ * Timeout for the single allowed retry (B2 fix): the REQUEST's own resolved
+ * limit — per-phase timeout class included via resolveTimeoutMs — scaled by
+ * the retry decision. Deriving from defaultTimeoutMs() instead would ignore
+ * the phase class and could make the "raised" retry limit LOWER than the
+ * original attempt's (e.g. class 900s vs default 300s × 1.5 = 450s).
+ */
+export function retryTimeoutMs(req: Pick<SpawnRequest, "timeoutMs" | "phaseId">, timeoutScale: number): number {
+  return Math.round(resolveTimeoutMs(req) * timeoutScale);
 }
 
 // --- Runtime liveness -------------------------------------------------------
@@ -356,7 +367,12 @@ export async function executeCurrentPhase(
     // any disagreement ⇒ parsed=null ⇒ D4 park (no attempt burned).
     if (state.workflowId === "sprint" && phase.loopBackTo && verdictsEnabled()) {
       const outcome = mergeParseOutcomes(
-        results.map((r) => parseHandoffVerdicts(r.result.output ?? "")),
+        // B1 fix: parse the UNCAPPED rawOutput. `output` is capOutput()'d at
+        // 50KB — and the ## HANDOFF section (the only channel the parser
+        // reads) trails the report, so any subagent producing >50KB of output
+        // would lose its verdict lines to the truncation and park the gate
+        // on every realistic run. rawOutput exists precisely for this.
+        results.map((r) => parseHandoffVerdicts(r.result.rawOutput || r.result.output || "")),
       );
       let parsed = outcome.parsed;
       if (parsed && !verifyArtifactVerdicts(parsed, ctx.cwd, state.sprintNumber)) {
@@ -557,7 +573,7 @@ async function runDeterministicDelegation(
         if (alive()) {
           result = await runSubagent({
             ...req,
-            timeoutMs: Math.round((req.timeoutMs ?? defaultTimeoutMs()) * decision.timeoutScale),
+            timeoutMs: retryTimeoutMs(req, decision.timeoutScale),
           });
         }
       }

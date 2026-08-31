@@ -336,9 +336,12 @@ export function buildRetryFeedback(
     return extractBlockers(content, kind);
   }
   // Review phases: concatenate whatever review artifacts exist.
+  // B3 fix: pass sprintNumber — gate artifacts are SPRINT-STAMPED
+  // (code-review-artifact_XX.md); scanning the unstamped names found nothing
+  // and silently emptied the RETRY CONTEXT of every review loop-back.
   const parts: string[] = [];
   for (const variable of ["code-review", "security-review", "software-architect-review"]) {
-    for (const p of artifactForVariable(variable, cwd)) {
+    for (const p of artifactForVariable(variable, cwd, sprintNumber)) {
       const content = readTail(p);
       if (content) {
         const blockers = extractBlockers(content, "review");

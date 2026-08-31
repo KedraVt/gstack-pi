@@ -14,6 +14,7 @@ import { parseHandoffVerdicts, verifyArtifactVerdicts, extractBlockers, buildRet
 import { computeNextSprintNumber, pad2, sprintArchiveDir, archivedSprintDirs } from "../orchestrator/sprint.ts";
 import { buildPhaseInstructions, buildDeterministicPlan, retryContextBlock, conditionalSkillIds, glossaryTable, MASTER_DOD } from "../orchestrator/templates.ts";
 import { modelTierFor, sprintMaxAttempts, sprintArchMaxAttempts, timeoutClassFor } from "../orchestrator/config.ts";
+import { retryTimeoutMs } from "../orchestrator/executor.ts";
 
 const SPRINT = getWorkflow("sprint")!;
 
@@ -805,6 +806,77 @@ describe("model tiers (E4/D10, inert by default)", () => {
       assert.equal(modelTierFor("implement"), undefined, "empty env falls back to agent default");
     } finally {
       restore();
+    }
+  });
+});
+
+// --- Code-review pass-1 fixes (B1 / B2 / B3) ---------------------------------
+
+describe("code-review pass-1 fixes", () => {
+  test("B1: verdicts must be parsed from the UNCAPPED rawOutput, not the 50KB-capped output", () => {
+    // Mirrors spawn.ts: output = capOutput(rawOutput) — truncated at 50KB with
+    // a truncation marker appended. The ## HANDOFF trails the report, so the
+    // capped channel amputates exactly the lines the parser needs.
+    const handoff = [
+      "## HANDOFF",
+      "VERIFIED FACTS: implementation complete @ src/app.ts:1",
+      "DECISIONS: none",
+      "status == green",
+    ].join("\n");
+    const rawOutput = `${"x".repeat(60_000)}\n\n## REPORT\nfull report body\n\n${handoff}\n`;
+    const output = `${rawOutput.slice(0, 50 * 1024)}\n…(truncated)`;
+
+    assert.ok(rawOutput.length > 50 * 1024, "precondition: raw output exceeds the cap");
+    assert.ok(!output.includes("## HANDOFF"), "precondition: capped channel lost the HANDOFF");
+
+    assert.equal(parseHandoffVerdicts(rawOutput).parsed?.verdicts["status"], "green");
+    assert.equal(parseHandoffVerdicts(output).parsed, null, "the capped channel must NOT parse — the executor must feed rawOutput");
+  });
+
+  test("B2: retryTimeoutMs scales the per-phase class timeout, not the global default", () => {
+    const saved = process.env.GSTACK_PI_SUBAGENT_TIMEOUT;
+    try {
+      process.env.GSTACK_PI_SUBAGENT_TIMEOUT = "300";
+      // "verify" class = 900s per TIMEOUT_CLASS_MAP — the retry must scale
+      // 900s, not the 300s global default (which would LOWER the limit).
+      assert.equal(retryTimeoutMs({ phaseId: "verify" }, 1.5), 900 * 1000 * 1.5);
+      // Explicit per-request override still wins.
+      assert.equal(retryTimeoutMs({ timeoutMs: 1000 }, 1.5), 1500);
+      // No phaseId, no override → global default (here 300s via the env set
+      // above; unset it would be the 20-min DEFAULT_TIMEOUT_MS) scaled.
+      assert.equal(retryTimeoutMs({}, 1.5), 300 * 1000 * 1.5);
+      delete process.env.GSTACK_PI_SUBAGENT_TIMEOUT;
+      assert.equal(retryTimeoutMs({}, 1.5), 20 * 60 * 1000 * 1.5, "unset env → built-in 20-min default, scaled");
+    } finally {
+      if (saved === undefined) delete process.env.GSTACK_PI_SUBAGENT_TIMEOUT;
+      else process.env.GSTACK_PI_SUBAGENT_TIMEOUT = saved;
+    }
+  });
+
+  test("B3: buildRetryFeedback finds SPRINT-STAMPED review artifacts", () => {
+    const parsed = { verdicts: { "code-review": "rejected" } };
+    const dir = tmpDir("gstack-b3-");
+    try {
+      fs.mkdirSync(path.join(dir, "devsecops"), { recursive: true });
+      writeFileSync(
+        path.join(dir, "devsecops", "code-review-artifact_03.md"),
+        "# Code Review\n\n- CRITICAL: SQL injection @ app/db.ts:42\n- WARNING: missing input validation @ app/api.ts:10\n",
+      );
+      const feedback = buildRetryFeedback(parsed as any, "devsecops-review", dir, 3);
+      assert.match(feedback, /SQL injection/, "stamped artifact must supply the retry blockers");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    // Negative pin: the UNSTAMPED artifact name satisfies nothing — this is
+    // the exact bug (the old code scanned unstamped names and got silence).
+    const unstampedDir = tmpDir("gstack-b3u-");
+    try {
+      fs.mkdirSync(path.join(unstampedDir, "devsecops"), { recursive: true });
+      writeFileSync(path.join(unstampedDir, "devsecops", "code-review-artifact.md"), "- CRITICAL: old finding\n");
+      assert.equal(buildRetryFeedback(parsed as any, "devsecops-review", unstampedDir, 3), "");
+    } finally {
+      rmSync(unstampedDir, { recursive: true, force: true });
     }
   });
 });
